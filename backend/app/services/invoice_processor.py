@@ -27,7 +27,8 @@ class InvoiceProcessor:
         self,
         pdf_path: str,
         db: Session,
-        preprocessing_mode: str = 'adaptive'
+        preprocessing_mode: str = 'adaptive',
+        original_filename: str = None
     ) -> Dict[str, Any]:
         """
         Process a PDF file through the complete pipeline
@@ -35,6 +36,8 @@ class InvoiceProcessor:
         Args:
             pdf_path: Path to PDF file
             db: Database session
+            preprocessing_mode: Preprocessing mode to use
+            original_filename: Original filename of the uploaded file
 
         Returns:
             Processing result with database IDs and validation status
@@ -108,7 +111,7 @@ class InvoiceProcessor:
 
             if not is_invoice:
                 # Store as other document
-                other_doc = self._save_other_document(db, full_text)
+                other_doc = self._save_other_document(db, full_text, original_filename)
                 result['success'] = True
                 result['document_type'] = 'other'
                 result['document_id'] = other_doc.id
@@ -166,7 +169,8 @@ class InvoiceProcessor:
                 invoice_data,
                 vlm_result,
                 avg_confidence,
-                validation_report
+                validation_report,
+                original_filename
             )
 
             result['success'] = True
@@ -186,7 +190,8 @@ class InvoiceProcessor:
         invoice_data: Dict[str, Any],
         vlm_result: Dict[str, Any],
         confidence_score: float,
-        validation_report: Dict[str, Any]
+        validation_report: Dict[str, Any],
+        original_filename: str = None
     ) -> Invoice:
         """Save invoice and line items to database"""
 
@@ -198,6 +203,7 @@ class InvoiceProcessor:
             total_without_vat=invoice_data.get('total_ht'),
             total_with_vat=invoice_data.get('total_ttc'),
             confidence_score=confidence_score,
+            original_filename=original_filename[:255] if original_filename else None,
             raw_vlm_json=vlm_result.get('structured_data'),
             raw_vlm_response=vlm_result.get('raw_response')
         )
@@ -226,7 +232,8 @@ class InvoiceProcessor:
     def _save_other_document(
         self,
         db: Session,
-        raw_text: str
+        raw_text: str,
+        original_filename: str = None
     ) -> OtherDocument:
         """Save non-invoice document to database"""
 
@@ -235,6 +242,7 @@ class InvoiceProcessor:
 
         other_doc = OtherDocument(
             provider=provider[:255] if provider else None,
+            original_filename=original_filename[:255] if original_filename else None,
             raw_text=raw_text
         )
 
