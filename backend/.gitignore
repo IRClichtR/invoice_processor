@@ -13,6 +13,9 @@ ENV/
 uploads/
 *.log
 .DS_Store
-models/
+# Ignore ML model weight files (but NOT app/models/ directory with SQLAlchemy models)
 *.pt
 *.pth
+*.bin
+*.onnx
+*.h5
