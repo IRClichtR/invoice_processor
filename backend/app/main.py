@@ -5,8 +5,9 @@ from app.db.base import engine, Base
 from app.api import invoices
 import os
 
-# Create database tables
-Base.metadata.create_all(bind=engine)
+# Database tables are managed by Alembic migrations
+# To create/update tables, run: alembic upgrade head
+# Base.metadata.create_all(bind=engine)  # No longer used - use migrations instead
 
 # Create upload directory
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
