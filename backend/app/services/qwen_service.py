@@ -2,11 +2,14 @@
 Qwen2-VL Service for Invoice Data Extraction
 
 Uses Qwen2-VL-2B-Instruct for structured invoice data extraction
+Model is cached locally (CPU-only, optimized for ~2-3 GB RAM)
 """
 
 from typing import Dict, Any, List
 from PIL import Image
 import torch
+import os
+import gc
 from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
 from qwen_vl_utils import process_vision_info
 import json
@@ -17,38 +20,50 @@ from app.core.config import settings
 class QwenService:
     """Service for extracting structured data from invoices using Qwen2-VL"""
 
-    def __init__(self, model_name: str = None, device: str = None):
+    def __init__(self, model_name: str = None):
         """
-        Initialize Qwen2-VL service
+        Initialize Qwen2-VL service (CPU-only)
 
         Args:
             model_name: Hugging Face model name (default: from settings)
-            device: Device to run model on (default: from settings)
         """
         self.model_name = model_name or settings.QWEN_MODEL
-        self.device = device or settings.DEVICE
+        self.device = "cpu"
         self.model = None
         self.processor = None
+        self.cache_dir = settings.MODEL_CACHE_DIR
+
+        # Ensure cache directory exists
+        os.makedirs(self.cache_dir, exist_ok=True)
+
+        # Set HuggingFace cache to our directory
+        os.environ["HF_HOME"] = self.cache_dir
+        os.environ["TRANSFORMERS_CACHE"] = self.cache_dir
 
     def load_model(self):
-        """Load Qwen2-VL model and processor"""
+        """Load Qwen2-VL model and processor (CPU-only, memory optimized)"""
         if self.model is None:
             print(f"Loading Qwen2-VL model: {self.model_name}")
+            print(f"Cache directory: {self.cache_dir}")
 
             # Load processor
             self.processor = AutoProcessor.from_pretrained(
                 self.model_name,
-                trust_remote_code=True
+                trust_remote_code=True,
+                cache_dir=self.cache_dir
             )
 
-            # Load model
+            # CPU-only, memory-optimized loading
             self.model = Qwen2VLForConditionalGeneration.from_pretrained(
                 self.model_name,
                 trust_remote_code=True,
-                torch_dtype=torch.float16 if self.device == "cuda" else torch.float32
-            ).to(self.device)
+                torch_dtype=torch.bfloat16,
+                low_cpu_mem_usage=True,
+                cache_dir=self.cache_dir
+            )
 
-            print(f"Model loaded on device: {self.device}")
+            self.model.eval()
+            print("Model loaded on CPU")
 
     def extract_invoice_data(
         self,
@@ -142,7 +157,7 @@ Return ONLY the JSON, no other text."""
         with torch.no_grad():
             generated_ids = self.model.generate(
                 **inputs,
-                max_new_tokens=2048,
+                max_new_tokens=1024,  # Reduced for memory
                 do_sample=False
             )
 
@@ -150,6 +165,10 @@ Return ONLY the JSON, no other text."""
         generated_ids_trimmed = [
             out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
         ]
+
+        # Clean up intermediate tensors to free memory
+        del inputs
+        gc.collect()
 
         # Decode response
         output_text = self.processor.batch_decode(

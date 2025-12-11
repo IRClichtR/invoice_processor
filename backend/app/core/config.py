@@ -1,8 +1,9 @@
+import os
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    DATABASE_URL: str = "postgresql://postgres:postgres@db:5432/invoice_db"
+    DATABASE_URL: str = "sqlite:///./invoice_db.sqlite"
 
     # Application settings
     APP_NAME: str = "Invoice Processor API"
@@ -17,9 +18,11 @@ class Settings(BaseSettings):
     TESSERACT_LANG: str = "fra+eng"  # French + English
     TESSERACT_CONFIG: str = "--psm 6 --oem 3"  # PSM 6: Uniform block of text, OEM 3: Default (LSTM)
 
-    # Qwen2-VL model settings
+    # Qwen2-VL model settings (CPU-only)
     QWEN_MODEL: str = "Qwen/Qwen2-VL-2B-Instruct"
-    DEVICE: str = "cpu"  # or "cuda"
+
+    # Model cache directory (persistent on user machine)
+    MODEL_CACHE_DIR: str = os.path.expanduser("~/.cache/invoice_processor/models")
 
     # Batch processing settings
     MAX_WORKERS: int = 4  # Maximum number of parallel threads for batch processing

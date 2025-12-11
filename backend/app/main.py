@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.db.base import engine, Base
 from app.api import invoices
+from app.services.model_manager import initialize_models
 import os
 
 # Database tables are managed by Alembic migrations
@@ -17,6 +18,11 @@ app = FastAPI(
     version=settings.APP_VERSION,
     debug=settings.DEBUG
 )
+
+# Initialize models at startup (load once, not on every request)
+@app.on_event("startup")
+async def startup_event():
+    initialize_models()
 
 # CORS middleware
 app.add_middleware(
