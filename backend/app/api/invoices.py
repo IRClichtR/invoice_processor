@@ -27,7 +27,6 @@ class InvoiceLineResponse(BaseModel):
     invoice_id: int
     designation: str | None
     quantity: float | None
-    unit: str | None
     unit_price: float | None
     total_ht: float | None
 

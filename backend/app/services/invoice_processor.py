@@ -1,21 +1,29 @@
 """
-Invoice Processor - Simple pipeline: PDF -> Image -> Florence-2 -> SQLite
+Invoice Processor - Pipeline: PDF -> Image -> OCR -> Florence-2 -> SQLite
+
+Dual-modality: Uses Tesseract OCR for text + positions, then Florence-2
+for visual understanding with text context.
 """
 
 from typing import Dict, Any
 from PIL import Image
 from sqlalchemy.orm import Session
+import structlog
 
 from app.utils.pdf_converter import PDFConverter
+from app.services.ocr_service import OCRService
 from app.services.model_manager import get_florence_service
 from app.models.invoice import Invoice, InvoiceLine, OtherDocument
 
+logger = structlog.get_logger(__name__)
+
 
 class InvoiceProcessor:
-    """Process invoices: PDF -> Image -> Florence-2 -> SQLite"""
+    """Process invoices: PDF -> Image -> OCR -> Florence-2 -> SQLite"""
 
     def __init__(self):
         self.pdf_converter = PDFConverter()
+        self.ocr_service = OCRService()
         self.florence_service = get_florence_service()
 
     def process_pdf(
@@ -42,38 +50,52 @@ class InvoiceProcessor:
 
         try:
             # Step 1: PDF -> Images
+            logger.info("Converting PDF to images", pdf_path=pdf_path)
             images = self.pdf_converter.pdf_to_images(pdf_path)
             result['page_count'] = len(images)
 
-            # Step 2: Extract data with Florence-2 (use first page)
-            florence_result = self.florence_service.extract_invoice_data(images[0])
+            # Step 2: OCR with spatial positions (first page)
+            logger.info("Running OCR extraction")
+            ocr_result = self.ocr_service.extract_spatial_text(images[0])
+
+            # Step 3: Florence-2 with dual modality (image + OCR context)
+            logger.info("Running Florence-2 extraction")
+            florence_result = self.florence_service.extract_invoice_data(
+                image=images[0],
+                ocr_text=ocr_result['full_text'],
+                spatial_grid=ocr_result['spatial_grid'],
+                words=ocr_result['words']
+            )
             invoice_data = florence_result['structured_data']
 
-            # Step 3: Save to database
+            # Step 4: Save to database
             if not invoice_data.get('is_invoice', True):
                 # Not an invoice - save as other document
                 other_doc = self._save_other_document(
                     db,
-                    florence_result['raw_response'],
+                    florence_result.get('raw_response', ''),
                     original_filename
                 )
                 result['success'] = True
                 result['document_type'] = 'other'
                 result['document_id'] = other_doc.id
+                logger.info("Saved as other document", document_id=other_doc.id)
             else:
                 # Invoice - save with line items
                 invoice = self._save_invoice(
                     db,
                     invoice_data,
-                    florence_result['raw_response'],
+                    florence_result.get('raw_response', ''),
                     original_filename
                 )
                 result['success'] = True
                 result['document_type'] = 'invoice'
                 result['invoice_id'] = invoice.id
                 result['extracted_data'] = invoice_data
+                logger.info("Saved invoice", invoice_id=invoice.id, provider=invoice_data.get('provider'))
 
         except Exception as e:
+            logger.error("Processing failed", error=str(e))
             result['success'] = False
             result['error'] = str(e)
 
@@ -106,7 +128,6 @@ class InvoiceProcessor:
                 invoice_id=invoice.id,
                 designation=item_data.get('designation', '')[:500],
                 quantity=item_data.get('quantity'),
-                unit=item_data.get('unit', '')[:50] if item_data.get('unit') else None,
                 unit_price=item_data.get('unit_price'),
                 total_ht=item_data.get('total_ht')
             )
