@@ -9,6 +9,7 @@ ENV/
 .venv
 .env
 *.db
+*.sqlite
 *.sqlite3
 uploads/
 *.log

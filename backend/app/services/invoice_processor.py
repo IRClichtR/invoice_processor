@@ -7,7 +7,7 @@ from app.utils.pdf_converter import PDFConverter
 from app.utils.image_preprocessor import ImagePreprocessor
 from app.utils.adaptive_preprocessor import AdaptivePreprocessor
 from app.services.ocr_service import OCRService
-from app.services.qwen_service import QwenService
+from app.services.model_manager import get_qwen_service
 from app.services.validation_service import ValidationService
 from app.models.invoice import Invoice, InvoiceLine, OtherDocument
 
@@ -20,7 +20,7 @@ class InvoiceProcessor:
         self.preprocessor = ImagePreprocessor()
         self.adaptive_preprocessor = AdaptivePreprocessor()
         self.ocr_service = OCRService()
-        self.qwen_service = QwenService()
+        self.qwen_service = get_qwen_service()  # Use global singleton
         self.validation_service = ValidationService()
 
     def process_pdf(

@@ -1,6 +1,6 @@
 # Database Migrations Guide
 
-This project uses Alembic for managing database schema changes.
+This project uses Alembic for managing database schema changes with SQLite.
 
 ## Common Migration Commands
 
@@ -98,9 +98,8 @@ docker exec invoice_backend alembic merge -m "merge migrations" <rev1> <rev2>
 ### Reset migrations (DESTRUCTIVE - only for development)
 If you need to completely reset:
 ```bash
-# Drop and recreate the database (will lose all data!)
-docker exec invoice_postgres psql -U postgres -c "DROP DATABASE invoice_db;"
-docker exec invoice_postgres psql -U postgres -c "CREATE DATABASE invoice_db;"
-# Apply all migrations from scratch
+# Delete the SQLite database file (will lose all data!)
+docker exec invoice_backend rm -f /app/invoice_db.sqlite
+# Apply all migrations from scratch to create new database
 docker exec invoice_backend alembic upgrade head
 ```

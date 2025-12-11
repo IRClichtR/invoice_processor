@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -16,6 +17,7 @@ from app.models.invoice import Invoice, InvoiceLine, OtherDocument
 from app.services.invoice_processor import InvoiceProcessor
 
 router = APIRouter()
+MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024  # 20 MB
 
 
 # Pydantic schemas for responses
@@ -88,6 +90,34 @@ class BatchProcessingResponse(BaseModel):
     results: List[FileProcessingResult]
 
 
+def _process_upload_in_thread(file_path: str, preprocessing_mode: str, original_filename: str) -> Dict[str, Any]:
+    """
+    Thread-safe processing function that creates its own database session
+
+    Args:
+        file_path: Path to the uploaded PDF file
+        preprocessing_mode: Preprocessing mode to use
+        original_filename: Original filename from upload
+
+    Returns:
+        Processing result dictionary
+    """
+    # Create a new database session for this thread
+    db = SessionLocal()
+
+    try:
+        processor = InvoiceProcessor()
+        result = processor.process_pdf(
+            file_path,
+            db,
+            preprocessing_mode,
+            original_filename
+        )
+        return result
+    finally:
+        db.close()
+
+
 @router.post("/invoices/upload", response_model=ProcessingResultResponse)
 async def upload_invoice(
     file: UploadFile = File(...),
@@ -110,9 +140,20 @@ async def upload_invoice(
     if not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are allowed")
 
-    # Validate file size
-    if file.spool_max_size and file.spool_max_size > settings.MAX_UPLOAD_SIZE:
-        raise HTTPException(status_code=400, detail="File size exceeds maximum limit")
+    # Validate file size by checking the file object size attribute
+    # This prevents zip/tar bombs from being uploaded
+    try:
+        file.file.seek(0, 2)  # Seek to end
+        file_size = file.file.tell()  # Get position (file size)
+        file.file.seek(0)  # Reset to beginning
+
+        if file_size > MAX_FILE_SIZE_BYTES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File size ({file_size / (1024*1024):.2f}MB) exceeds maximum limit of {MAX_FILE_SIZE_BYTES // (1024*1024)}MB"
+            )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Unable to determine file size: {str(e)}")
 
     # Validate file is not duplicate (basic check by filename)
     if (
@@ -134,9 +175,14 @@ async def upload_invoice(
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        # Process the PDF
-        processor = InvoiceProcessor()
-        result = processor.process_pdf(file_path, db, preprocessing_mode, file.filename)
+        # Process the PDF in thread pool with its own database session
+        # This avoids SQLite thread-safety issues
+        result = await run_in_threadpool(
+            _process_upload_in_thread,
+            file_path,
+            preprocessing_mode,
+            file.filename
+        )
 
         return ProcessingResultResponse(**result)
 
