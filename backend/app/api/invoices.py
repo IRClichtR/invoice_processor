@@ -2,6 +2,7 @@ import os
 import shutil
 import tempfile
 import zipfile
+import structlog
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Any, Dict, List
@@ -19,8 +20,8 @@ from app.services.invoice_processor import InvoiceProcessor
 router = APIRouter()
 MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024  # 20 MB
 
+logger = structlog.get_logger(__name__)
 
-# Pydantic schemas for responses
 class InvoiceLineResponse(BaseModel):
     id: int
     invoice_id: int
@@ -41,7 +42,6 @@ class InvoiceResponse(BaseModel):
     invoice_number: str | None
     total_without_vat: float | None
     total_with_vat: float | None
-    confidence_score: float | None
     original_filename: str | None
     created_at: datetime | None
     updated_at: datetime | None
@@ -67,8 +67,8 @@ class ProcessingResultResponse(BaseModel):
     document_type: str | None = None
     invoice_id: int | None = None
     document_id: int | None = None
-    processing_steps: dict = {}
-    validation: dict | None = None
+    page_count: int | None = None
+    extracted_data: dict | None = None
     error: str | None = None
 
 
@@ -90,29 +90,13 @@ class BatchProcessingResponse(BaseModel):
     results: List[FileProcessingResult]
 
 
-def _process_upload_in_thread(file_path: str, preprocessing_mode: str, original_filename: str) -> Dict[str, Any]:
-    """
-    Thread-safe processing function that creates its own database session
-
-    Args:
-        file_path: Path to the uploaded PDF file
-        preprocessing_mode: Preprocessing mode to use
-        original_filename: Original filename from upload
-
-    Returns:
-        Processing result dictionary
-    """
-    # Create a new database session for this thread
+def _process_upload_in_thread(file_path: str, original_filename: str) -> Dict[str, Any]:
+    """Thread-safe processing with its own database session"""
     db = SessionLocal()
-
     try:
+        logger.info("Processing uploaded file in threadpool", filename=original_filename)
         processor = InvoiceProcessor()
-        result = processor.process_pdf(
-            file_path,
-            db,
-            preprocessing_mode,
-            original_filename
-        )
+        result = processor.process_pdf(file_path, db, original_filename)
         return result
     finally:
         db.close()
@@ -121,74 +105,54 @@ def _process_upload_in_thread(file_path: str, preprocessing_mode: str, original_
 @router.post("/invoices/upload", response_model=ProcessingResultResponse)
 async def upload_invoice(
     file: UploadFile = File(...),
-    preprocessing_mode: str = "none",  # Options: 'none', 'adaptive', 'gentle', 'aggressive'
     db: Session = Depends(get_db),
 ):
     """
     Upload and process an invoice PDF
 
-    This endpoint:
-    1. Converts PDF to images
-    2. Applies preprocessing (deskew, CLAHE, denoise)
-    3. Extracts text with Tesseract OCR
-    4. Uses Qwen2-VL for structured data extraction
-    5. Validates if document is an invoice
-    6. Validates VAT calculations
-    7. Stores in database (invoices or other_documents table)
+    Pipeline: PDF -> Image -> Qwen2-VL -> SQLite
     """
-    # Validate file type
     if not file.filename.endswith(".pdf"):
+        logger.warning("Invalid file type uploaded", filename=file.filename)
         raise HTTPException(status_code=400, detail="Only PDF files are allowed")
 
-    # Validate file size by checking the file object size attribute
-    # This prevents zip/tar bombs from being uploaded
+    # Check file size
     try:
-        file.file.seek(0, 2)  # Seek to end
-        file_size = file.file.tell()  # Get position (file size)
-        file.file.seek(0)  # Reset to beginning
-
+        file.file.seek(0, 2)
+        file_size = file.file.tell()
+        file.file.seek(0)
         if file_size > MAX_FILE_SIZE_BYTES:
+            logger.warning("File size exceeds limit", filename=file.filename, size=file_size)
             raise HTTPException(
                 status_code=400,
                 detail=f"File size ({file_size / (1024*1024):.2f}MB) exceeds maximum limit of {MAX_FILE_SIZE_BYTES // (1024*1024)}MB"
             )
     except Exception as e:
+        logger.error("Error checking file size", filename=file.filename, error=str(e))
         raise HTTPException(status_code=400, detail=f"Unable to determine file size: {str(e)}")
 
-    # Validate file is not duplicate (basic check by filename)
+    # Check for duplicate filename
     if (
         db.query(Invoice).filter(Invoice.original_filename == file.filename).first()
-        or db.query(OtherDocument)
-        .filter(OtherDocument.original_filename == file.filename)
-        .first()
+        or db.query(OtherDocument).filter(OtherDocument.original_filename == file.filename).first()
     ):
-        raise HTTPException(
-            status_code=400, detail="File with the same name already exists"
-        )
+        raise HTTPException(status_code=400, detail="File with the same name already exists")
 
     # Save uploaded file
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"{timestamp}_{file.filename}"
     file_path = os.path.join(settings.UPLOAD_DIR, filename)
+    logger.info("Saving uploaded file", filename=file.filename)
 
     try:
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        # Process the PDF in thread pool with its own database session
-        # This avoids SQLite thread-safety issues
-        result = await run_in_threadpool(
-            _process_upload_in_thread,
-            file_path,
-            preprocessing_mode,
-            file.filename
-        )
-
+        result = await run_in_threadpool(_process_upload_in_thread, file_path, file.filename)
         return ProcessingResultResponse(**result)
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Processing error: {str(e)}")
-
     finally:
         file.file.close()
 
@@ -234,33 +198,18 @@ def delete_invoice(invoice_id: int, db: Session = Depends(get_db)):
 
     db.delete(invoice)
     db.commit()
-
     return {"message": "Invoice deleted successfully"}
 
 
 def process_single_pdf(pdf_path: str, filename: str) -> FileProcessingResult:
-    """
-    Process a single PDF file with its own database session
-    Thread-safe function for parallel processing
-
-    Args:
-        pdf_path: Path to PDF file
-        filename: Original filename
-
-    Returns:
-        FileProcessingResult with processing outcome
-    """
+    """Process a single PDF file with its own database session"""
     import time
-
     start_time = time.time()
-
-    # Create a new database session for this thread
     db = SessionLocal()
 
     try:
         processor = InvoiceProcessor()
         result = processor.process_pdf(pdf_path, db, original_filename=filename)
-
         processing_time = time.time() - start_time
 
         return FileProcessingResult(
@@ -272,45 +221,26 @@ def process_single_pdf(pdf_path: str, filename: str) -> FileProcessingResult:
             error=result.get("error"),
             processing_time=processing_time,
         )
-
     except Exception as e:
-        processing_time = time.time() - start_time
         return FileProcessingResult(
             filename=filename,
             success=False,
             error=str(e),
-            processing_time=processing_time,
+            processing_time=time.time() - start_time,
         )
-
     finally:
         db.close()
 
 
 @router.post("/invoices/batch-upload", response_model=BatchProcessingResponse)
-async def batch_upload_invoices(
-    files: List[UploadFile] = File(...), max_workers: int = 4
-):
-    """
-    Batch upload and process multiple PDF files with multithreading
-
-    Upload multiple PDF files at once. Files will be processed in parallel
-    using multithreading for optimal performance.
-
-    Args:
-        files: List of PDF files to process
-        max_workers: Maximum number of parallel threads (default: 4)
-
-    Returns:
-        Batch processing summary with results for each file
-    """
+async def batch_upload_invoices(files: List[UploadFile] = File(...), max_workers: int = 4):
+    """Batch upload and process multiple PDF files"""
     import time
-
     batch_start_time = time.time()
 
     if not files:
         raise HTTPException(status_code=400, detail="No files provided")
 
-    # Validate all files are PDFs
     for file in files:
         if not file.filename.endswith(".pdf"):
             raise HTTPException(
@@ -318,7 +248,6 @@ async def batch_upload_invoices(
                 detail=f"Only PDF files are allowed. Invalid file: {file.filename}",
             )
 
-    # Save all uploaded files first
     saved_files = []
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -333,36 +262,26 @@ async def batch_upload_invoices(
             saved_files.append((file_path, file.filename))
             file.file.close()
 
-        # Process files in parallel using ThreadPoolExecutor
         results = []
-
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Submit all tasks
             future_to_file = {
-                executor.submit(process_single_pdf, file_path, original_name): (
-                    file_path,
-                    original_name,
-                )
+                executor.submit(process_single_pdf, file_path, original_name): (file_path, original_name)
                 for file_path, original_name in saved_files
             }
 
-            # Collect results as they complete
             for future in as_completed(future_to_file):
                 try:
                     result = future.result()
                     results.append(result)
                 except Exception as e:
                     file_path, original_name = future_to_file[future]
-                    results.append(
-                        FileProcessingResult(
-                            filename=original_name,
-                            success=False,
-                            error=f"Unexpected error: {str(e)}",
-                            processing_time=0.0,
-                        )
-                    )
+                    results.append(FileProcessingResult(
+                        filename=original_name,
+                        success=False,
+                        error=f"Unexpected error: {str(e)}",
+                        processing_time=0.0,
+                    ))
 
-        # Calculate statistics
         total_files = len(results)
         successful = sum(1 for r in results if r.success)
         failed = total_files - successful
@@ -382,32 +301,14 @@ async def batch_upload_invoices(
 
 @router.post("/invoices/batch-upload-zip", response_model=BatchProcessingResponse)
 async def batch_upload_from_zip(file: UploadFile = File(...), max_workers: int = 4):
-    """
-    Upload a ZIP file containing multiple PDF invoices and process them in parallel
-
-    Upload a ZIP archive containing PDF files. The system will:
-    1. Extract all PDF files from the ZIP
-    2. Process them in parallel using multithreading
-    3. Return detailed results for each file
-
-    Args:
-        file: ZIP file containing PDF invoices
-        max_workers: Maximum number of parallel threads (default: 4)
-
-    Returns:
-        Batch processing summary with results for each file
-    """
+    """Upload a ZIP file containing multiple PDF invoices"""
     import time
-
     batch_start_time = time.time()
 
-    # Validate file type
     if not file.filename.endswith(".zip"):
         raise HTTPException(status_code=400, detail="Only ZIP files are allowed")
 
-    # Create temporary directory for extraction
     with tempfile.TemporaryDirectory() as temp_dir:
-        # Save uploaded ZIP file
         zip_path = os.path.join(temp_dir, file.filename)
 
         try:
@@ -415,17 +316,14 @@ async def batch_upload_from_zip(file: UploadFile = File(...), max_workers: int =
                 shutil.copyfileobj(file.file, buffer)
             file.file.close()
 
-            # Extract ZIP file
             with zipfile.ZipFile(zip_path, "r") as zip_ref:
                 zip_ref.extractall(temp_dir)
 
-            # Find all PDF files in the extracted content
             pdf_files = []
             for root, dirs, files in os.walk(temp_dir):
                 for filename in files:
                     if filename.endswith(".pdf"):
                         pdf_path = os.path.join(root, filename)
-                        # Copy to uploads directory
                         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                         new_filename = f"{timestamp}_{filename}"
                         new_path = os.path.join(settings.UPLOAD_DIR, new_filename)
@@ -433,40 +331,28 @@ async def batch_upload_from_zip(file: UploadFile = File(...), max_workers: int =
                         pdf_files.append((new_path, filename))
 
             if not pdf_files:
-                raise HTTPException(
-                    status_code=400, detail="No PDF files found in ZIP archive"
-                )
+                raise HTTPException(status_code=400, detail="No PDF files found in ZIP archive")
 
-            # Process files in parallel using ThreadPoolExecutor
             results = []
-
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                # Submit all tasks
                 future_to_file = {
-                    executor.submit(process_single_pdf, file_path, original_name): (
-                        file_path,
-                        original_name,
-                    )
+                    executor.submit(process_single_pdf, file_path, original_name): (file_path, original_name)
                     for file_path, original_name in pdf_files
                 }
 
-                # Collect results as they complete
                 for future in as_completed(future_to_file):
                     try:
                         result = future.result()
                         results.append(result)
                     except Exception as e:
                         file_path, original_name = future_to_file[future]
-                        results.append(
-                            FileProcessingResult(
-                                filename=original_name,
-                                success=False,
-                                error=f"Unexpected error: {str(e)}",
-                                processing_time=0.0,
-                            )
-                        )
+                        results.append(FileProcessingResult(
+                            filename=original_name,
+                            success=False,
+                            error=f"Unexpected error: {str(e)}",
+                            processing_time=0.0,
+                        ))
 
-            # Calculate statistics
             total_files = len(results)
             successful = sum(1 for r in results if r.success)
             failed = total_files - successful
@@ -483,6 +369,4 @@ async def batch_upload_from_zip(file: UploadFile = File(...), max_workers: int =
         except zipfile.BadZipFile:
             raise HTTPException(status_code=400, detail="Invalid ZIP file")
         except Exception as e:
-            raise HTTPException(
-                status_code=500, detail=f"Batch processing error: {str(e)}"
-            )
+            raise HTTPException(status_code=500, detail=f"Batch processing error: {str(e)}")

@@ -1,24 +1,27 @@
 """
 Global model manager - loads models once at startup
 """
+import structlog
 
-from app.services.qwen_service import QwenService
+logger = structlog.get_logger(__name__)
 
-# Global singleton instances
-_qwen_service = None
+from app.services.florence_service import FlorenceService
+
+# Global singleton instance
+_florence_service = None
 
 
-def get_qwen_service() -> QwenService:
-    """Get or create the global Qwen service instance"""
-    global _qwen_service
-    if _qwen_service is None:
-        _qwen_service = QwenService()
-        _qwen_service.load_model()  # Load once at first access
-    return _qwen_service
+def get_florence_service() -> FlorenceService:
+    """Get or create the global Florence service instance"""
+    global _florence_service
+    if _florence_service is None:
+        _florence_service = FlorenceService()
+        _florence_service.load_model()
+    return _florence_service
 
 
 def initialize_models():
     """Initialize all models at startup"""
-    print("Initializing models at startup...")
-    get_qwen_service()
-    print("Models initialized successfully!")
+    logger.info("Initializing models at startup...")
+    get_florence_service()
+    logger.info("Models initialized successfully!")
