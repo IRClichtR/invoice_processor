@@ -1,152 +1,130 @@
+"""
+OCR Service - Extract text with spatial positions using Tesseract
+"""
+
 import pytesseract
 from PIL import Image
 from typing import Dict, List, Any
-import numpy as np
-from app.core.config import settings
+import structlog
+import time
+
+logger = structlog.get_logger(__name__)
 
 
 class OCRService:
-    """Tesseract OCR service optimized for French and English text extraction"""
+    """Tesseract OCR service for spatial text extraction"""
 
-    def __init__(self):
-        self.lang = settings.TESSERACT_LANG
-        self.config = settings.TESSERACT_CONFIG
+    def __init__(self, lang: str = "fra+eng"):
+        self.lang = lang
 
-    def extract_text_with_details(self, image: Image.Image) -> Dict[str, Any]:
+    def extract_spatial_text(self, image: Image.Image) -> Dict[str, Any]:
         """
-        Extract text with positions and confidence scores using Tesseract
-        Optimized for French and English invoice processing
-
-        Args:
-            image: PIL Image
+        Extract text with normalized positions from image.
 
         Returns:
-            Dictionary containing:
-            - full_text: Complete extracted text
-            - word_data: Detailed word-level information including positions and confidence
-            - average_confidence: Average confidence score across all words
+            {
+                'full_text': str,
+                'spatial_grid': str,  # Formatted for VLM context
+                'words': List[Dict]   # Raw word data
+            }
         """
-        # Get detailed OCR data with French and English support
-        ocr_data = pytesseract.image_to_data(
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+
+        width, height = image.size
+        logger.info("Running Tesseract OCR", width=width, height=height, lang=self.lang)
+        ocr_start = time.time()
+
+        # Get word-level data with bounding boxes
+        data = pytesseract.image_to_data(
             image,
             lang=self.lang,
-            config=self.config,
-            output_type=pytesseract.Output.DICT
+            output_type=pytesseract.Output.DICT,
+            config='--psm 6'  # Assume uniform block of text
         )
 
-        # Get full text
-        full_text = pytesseract.image_to_string(
-            image,
-            lang=self.lang,
-            config=self.config
-        )
+        words = []
+        for i in range(len(data['text'])):
+            text = data['text'][i].strip()
+            conf = int(data['conf'][i])
 
-        # Process OCR data
-        word_data = []
-        n_boxes = len(ocr_data['text'])
+            # Skip empty or low-confidence words
+            if not text or conf < 30:
+                continue
 
-        for i in range(n_boxes):
-            # Filter out empty detections and low confidence results
-            text = str(ocr_data['text'][i]).strip()
-            confidence = int(ocr_data['conf'][i])
+            # Normalize positions to 0-1 range
+            x = data['left'][i] / width
+            y = data['top'][i] / height
+            w = data['width'][i] / width
+            h = data['height'][i] / height
 
-            if text and confidence > 0:
-                word_info = {
-                    'text': text,
-                    'confidence': float(confidence),
-                    'left': int(ocr_data['left'][i]),
-                    'top': int(ocr_data['top'][i]),
-                    'width': int(ocr_data['width'][i]),
-                    'height': int(ocr_data['height'][i]),
-                    'block_num': int(ocr_data['block_num'][i]),
-                    'par_num': int(ocr_data['par_num'][i]),
-                    'line_num': int(ocr_data['line_num'][i]),
-                    'word_num': int(ocr_data['word_num'][i])
-                }
-                word_data.append(word_info)
+            words.append({
+                'text': text,
+                'x': round(x, 3),
+                'y': round(y, 3),
+                'w': round(w, 3),
+                'h': round(h, 3),
+                'conf': conf
+            })
 
-        # Calculate average confidence
-        if word_data:
-            avg_confidence = sum(w['confidence'] for w in word_data) / len(word_data)
-        else:
-            avg_confidence = 0.0
+        # Build spatial grid string for VLM
+        spatial_grid = self._build_spatial_grid(words)
+
+        # Build full text
+        full_text = pytesseract.image_to_string(image, lang=self.lang)
+
+        ocr_time = time.time() - ocr_start
+        logger.info("OCR completed", word_count=len(words), text_length=len(full_text), ocr_time_sec=round(ocr_time, 2))
 
         return {
-            'full_text': full_text,
-            'word_data': word_data,
-            'average_confidence': avg_confidence,
-            'total_words': len(word_data)
+            'full_text': full_text.strip(),
+            'spatial_grid': spatial_grid,
+            'words': words
         }
 
-    def extract_from_multiple_images(self, images: List[Image.Image]) -> List[Dict[str, Any]]:
+    def _build_spatial_grid(self, words: List[Dict]) -> str:
         """
-        Extract text from multiple images (pages)
+        Build a spatial text grid string for VLM context.
 
-        Args:
-            images: List of PIL Images
+        Format:
+        [y_pos] "text" "text" "text"
+        [y_pos] "text" "text"
 
-        Returns:
-            List of OCR results for each page
+        Groups words by approximate Y position (line).
         """
-        results = []
-        for idx, image in enumerate(images):
-            try:
-                result = self.extract_text_with_details(image)
-                result['page_number'] = idx + 1
-                results.append(result)
-            except Exception as e:
-                results.append({
-                    'page_number': idx + 1,
-                    'error': str(e),
-                    'full_text': '',
-                    'word_data': [],
-                    'average_confidence': 0.0,
-                    'total_words': 0
-                })
+        if not words:
+            return ""
 
-        return results
+        # Sort by Y position, then X
+        sorted_words = sorted(words, key=lambda w: (w['y'], w['x']))
 
-    def get_text_blocks(self, image: Image.Image) -> List[Dict[str, Any]]:
-        """
-        Extract text organized by blocks for better structure understanding
+        lines = []
+        current_line = []
+        current_y = -1
+        y_tolerance = 0.015  # 1.5% of image height
 
-        Args:
-            image: PIL Image
+        for word in sorted_words:
+            if current_y < 0 or abs(word['y'] - current_y) <= y_tolerance:
+                current_line.append(word)
+                if current_y < 0:
+                    current_y = word['y']
+            else:
+                # New line
+                if current_line:
+                    lines.append((current_y, current_line))
+                current_line = [word]
+                current_y = word['y']
 
-        Returns:
-            List of text blocks with positions
-        """
-        ocr_data = pytesseract.image_to_data(
-            image,
-            lang=self.lang,
-            config=self.config,
-            output_type=pytesseract.Output.DICT
-        )
+        # Add last line
+        if current_line:
+            lines.append((current_y, current_line))
 
-        blocks = {}
-        n_boxes = len(ocr_data['text'])
+        # Format as spatial grid
+        grid_lines = []
+        for y_pos, line_words in lines:
+            # Sort line by X position
+            line_words_sorted = sorted(line_words, key=lambda w: w['x'])
+            texts = [f'"{w["text"]}"' for w in line_words_sorted]
+            grid_lines.append(f"[{y_pos:.2f}] {' '.join(texts)}")
 
-        for i in range(n_boxes):
-            text = str(ocr_data['text'][i]).strip()
-            if text and int(ocr_data['conf'][i]) > 0:
-                block_num = int(ocr_data['block_num'][i])
-
-                if block_num not in blocks:
-                    blocks[block_num] = {
-                        'block_num': block_num,
-                        'text': [],
-                        'left': int(ocr_data['left'][i]),
-                        'top': int(ocr_data['top'][i]),
-                        'width': int(ocr_data['width'][i]),
-                        'height': int(ocr_data['height'][i])
-                    }
-
-                blocks[block_num]['text'].append(text)
-
-        # Convert to list and join text
-        block_list = []
-        for block in blocks.values():
-            block['text'] = ' '.join(block['text'])
-            block_list.append(block)
-
-        return block_list
+        return "\n".join(grid_lines)

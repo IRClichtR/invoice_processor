@@ -1,15 +1,11 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
-from app.db.base import engine, Base
+from app.db.base import init_db
 from app.api import invoices
 from app.services.model_manager import initialize_models
 import os
 import structlog
-
-# Database tables are managed by Alembic migrations
-# To create/update tables, run: alembic upgrade head
-# Base.metadata.create_all(bind=engine)  # No longer used - use migrations instead
 
 # Configure logging
 structlog.configure(
@@ -30,10 +26,12 @@ app = FastAPI(
     debug=settings.DEBUG
 )
 
-# Initialize models at startup (load once, not on every request)
+# Initialize database and models at startup
 @app.on_event("startup")
 async def startup_event():
-    logger.info("Starting up and initializing models...")
+    logger.info("Initializing database...")
+    init_db()
+    logger.info("Initializing models...")
     initialize_models()
 
 # CORS middleware

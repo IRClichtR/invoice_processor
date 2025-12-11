@@ -14,6 +14,13 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 
+def init_db():
+    """Create all tables if they don't exist"""
+    # Import models to ensure they're registered with Base
+    from app.models.invoice import Invoice, InvoiceLine, OtherDocument
+    Base.metadata.create_all(bind=engine)
+
+
 def get_db():
     db = SessionLocal()
     try:

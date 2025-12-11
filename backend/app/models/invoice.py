@@ -31,7 +31,6 @@ class InvoiceLine(Base):
     invoice_id = Column(Integer, ForeignKey("invoices.id", ondelete="CASCADE"), nullable=False)
     designation = Column(String(500), nullable=True)
     quantity = Column(Float, nullable=True)
-    unit = Column(String(50), nullable=True)
     unit_price = Column(Float, nullable=True)
     total_ht = Column(Float, nullable=True)
 

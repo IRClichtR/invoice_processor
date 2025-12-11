@@ -2,9 +2,12 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install only poppler for PDF to image conversion
+# Install poppler (PDF) and tesseract (OCR)
 RUN apt-get update && apt-get install -y \
     poppler-utils \
+    tesseract-ocr \
+    tesseract-ocr-fra \
+    tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
