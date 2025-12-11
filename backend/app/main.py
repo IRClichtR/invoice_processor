@@ -5,10 +5,21 @@ from app.db.base import engine, Base
 from app.api import invoices
 from app.services.model_manager import initialize_models
 import os
+import structlog
 
 # Database tables are managed by Alembic migrations
 # To create/update tables, run: alembic upgrade head
 # Base.metadata.create_all(bind=engine)  # No longer used - use migrations instead
+
+# Configure logging
+structlog.configure(
+    processors=[
+        structlog.processors.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.dev.ConsoleRenderer(),
+    ]
+)
+logger = structlog.get_logger()
 
 # Create upload directory
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
@@ -22,6 +33,7 @@ app = FastAPI(
 # Initialize models at startup (load once, not on every request)
 @app.on_event("startup")
 async def startup_event():
+    logger.info("Starting up and initializing models...")
     initialize_models()
 
 # CORS middleware

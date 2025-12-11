@@ -5,16 +5,15 @@ alembic==1.13.1
 python-multipart==0.0.6
 pydantic==2.5.3
 pydantic-settings==2.1.0
-pytesseract==0.3.10
 pdf2image==1.17.0
-opencv-python-headless==4.9.0.80
 numpy==1.26.3
 Pillow==10.2.0
 transformers>=4.47.0
 python-dotenv==1.0.0
-qwen-vl-utils
 accelerate
+einops
+timm
+structlog
 --extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.2.0+cpu
-torchvision==0.17.0+cpu
-
+torch==2.5.1+cpu
+torchvision==0.20.1+cpu
