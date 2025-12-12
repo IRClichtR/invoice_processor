@@ -1,7 +1,65 @@
 <script setup lang="ts">
+import { ref } from 'vue';
+
 const emit = defineEmits<{
   (e: 'navigate', page: string): void;
+  (e: 'files-dropped', files: File[]): void;
 }>();
+
+const isDragging = ref(false);
+const fileInputRef = ref<HTMLInputElement | null>(null);
+
+const acceptedTypes = [
+  'application/pdf',
+  'application/zip',
+  'application/x-zip-compressed'
+];
+
+const acceptedExtensions = ['.pdf', '.zip'];
+
+function isValidFile(file: File): boolean {
+  const extension = '.' + file.name.split('.').pop()?.toLowerCase();
+  return acceptedTypes.includes(file.type) || acceptedExtensions.includes(extension);
+}
+
+function handleDragOver(e: DragEvent) {
+  e.preventDefault();
+  isDragging.value = true;
+}
+
+function handleDragLeave(e: DragEvent) {
+  e.preventDefault();
+  isDragging.value = false;
+}
+
+function handleDrop(e: DragEvent) {
+  e.preventDefault();
+  isDragging.value = false;
+
+  const files = Array.from(e.dataTransfer?.files || []);
+  const validFiles = files.filter(isValidFile);
+
+  if (validFiles.length > 0) {
+    emit('files-dropped', validFiles);
+  }
+}
+
+function openFileDialog() {
+  fileInputRef.value?.click();
+}
+
+function handleFileInput(e: Event) {
+  const input = e.target as HTMLInputElement;
+  const files = Array.from(input.files || []);
+  const validFiles = files.filter(isValidFile);
+
+  if (validFiles.length > 0) {
+    emit('files-dropped', validFiles);
+  }
+
+  // Reset input
+  input.value = '';
+}
 </script>
 
 <template>
@@ -26,9 +84,34 @@ const emit = defineEmits<{
           AI-powered invoice extraction that runs entirely on your machine.
           No cloud, no data leaks, just results.
         </p>
-        <div class="hero-actions">
-          <button class="btn btn-primary">Upload Invoice</button>
-          <button class="btn btn-secondary">Learn More</button>
+        <div
+          class="dropzone"
+          :class="{ 'dropzone-active': isDragging }"
+          @dragover="handleDragOver"
+          @dragleave="handleDragLeave"
+          @drop="handleDrop"
+          @click="openFileDialog"
+        >
+          <input
+            ref="fileInputRef"
+            type="file"
+            accept=".pdf,.zip"
+            multiple
+            hidden
+            @change="handleFileInput"
+          />
+          <div class="dropzone-icon">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="17 8 12 3 7 8"></polyline>
+              <line x1="12" y1="3" x2="12" y2="15"></line>
+            </svg>
+          </div>
+          <p class="dropzone-text">
+            <span class="dropzone-highlight">Drop your files here</span>
+            or click to browse
+          </p>
+          <p class="dropzone-hint">PDF and ZIP files accepted</p>
         </div>
       </div>
     </section>
@@ -111,10 +194,51 @@ const emit = defineEmits<{
   flex-direction: column;
 }
 
-.hero-actions {
-  display: flex;
-  gap: var(--spacing-md);
-  justify-content: center;
+.dropzone {
+  max-width: 500px;
+  margin: 0 auto;
+  padding: var(--spacing-2xl);
+  border: 2px dashed var(--color-gray-300);
+  border-radius: var(--border-radius-lg);
+  background-color: var(--color-gray-100);
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.dropzone:hover {
+  border-color: var(--color-gray-500);
+  background-color: var(--color-white);
+}
+
+.dropzone-active {
+  border-color: var(--color-black);
+  background-color: var(--color-white);
+  border-style: solid;
+}
+
+.dropzone-icon {
+  margin-bottom: var(--spacing-md);
+  color: var(--color-gray-500);
+}
+
+.dropzone-active .dropzone-icon {
+  color: var(--color-black);
+}
+
+.dropzone-text {
+  font-size: 1rem;
+  color: var(--color-gray-600);
+  margin-bottom: var(--spacing-xs);
+}
+
+.dropzone-highlight {
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-black);
+}
+
+.dropzone-hint {
+  font-size: 0.875rem;
+  color: var(--color-gray-400);
 }
 
 .feature-card.clickable {
