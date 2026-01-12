@@ -13,6 +13,7 @@ class Invoice(Base):
     invoice_number = Column(String(100), nullable=True, index=True)
     total_without_vat = Column(Float, nullable=True)
     total_with_vat = Column(Float, nullable=True)
+    currency = Column(String(3), nullable=False, default="EUR")
     confidence_score = Column(Float, nullable=True)
     original_filename = Column(String(255), nullable=True, index=True)
     raw_vlm_json = Column(JSON, nullable=True)

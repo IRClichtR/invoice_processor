@@ -197,6 +197,7 @@ class FlorenceService:
             'total_ht': total_ht,
             'total_ttc': total_ttc,
             'vat_amount': vat_amount,
+            'currency': self._extract_currency(ocr_text),
             'line_items': self._extract_line_items_improved(words)
         }
 
@@ -298,6 +299,59 @@ class FlorenceService:
             if match:
                 return match.group(1)[:50]
         return ''
+
+    def _extract_currency(self, text: str) -> str:
+        """Extract currency from invoice text, defaults to EUR"""
+        text_upper = text.upper()
+
+        # Currency symbols and their codes
+        currency_map = {
+            '€': 'EUR',
+            '$': 'USD',
+            '£': 'GBP',
+            '¥': 'JPY',
+            'CHF': 'CHF',
+            'CAD': 'CAD',
+            'AUD': 'AUD',
+        }
+
+        # Check for currency symbols first (most reliable)
+        for symbol, code in currency_map.items():
+            if symbol in text:
+                # For $, need to distinguish USD/CAD/AUD
+                if symbol == '$':
+                    if 'CAD' in text_upper or 'CANADA' in text_upper:
+                        return 'CAD'
+                    if 'AUD' in text_upper or 'AUSTRALIA' in text_upper:
+                        return 'AUD'
+                    return 'USD'
+                return code
+
+        # Check for currency codes near amounts
+        currency_patterns = [
+            r'\b(EUR|USD|GBP|CHF|JPY|CAD|AUD)\b',
+            r'(?:euro|euros|dollar|dollars|pound|pounds|franc|francs|yen)',
+        ]
+
+        for pattern in currency_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                found = match.group(1).upper() if match.lastindex else match.group(0).lower()
+                # Map word to code
+                word_map = {
+                    'euro': 'EUR', 'euros': 'EUR',
+                    'dollar': 'USD', 'dollars': 'USD',
+                    'pound': 'GBP', 'pounds': 'GBP',
+                    'franc': 'CHF', 'francs': 'CHF',
+                    'yen': 'JPY',
+                }
+                if found in word_map:
+                    return word_map[found]
+                if found in ['EUR', 'USD', 'GBP', 'CHF', 'JPY', 'CAD', 'AUD']:
+                    return found
+
+        # Default to EUR
+        return 'EUR'
 
     def _extract_total_amount(self, ocr_text: str, words: List[Dict], keywords: list) -> Optional[float]:
         """Extract total amounts - search bottom of document first"""
