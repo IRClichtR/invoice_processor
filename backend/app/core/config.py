@@ -14,8 +14,11 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = "uploads"
     MAX_UPLOAD_SIZE: int = 50 * 1024 * 1024  # 50MB
 
-    # Florence-2 model settings (CPU-only)
+    # Florence-2 model settings (CPU-only) - for printed documents
     FLORENCE_MODEL: str = "microsoft/Florence-2-base"
+
+    # VisionOCR model settings - for handwritten documents
+    VISIONOCR_MODEL: str = "stepfun-ai/GOT-OCR-2.0-hf"
 
     # Model cache directory (persistent on user machine)
     MODEL_CACHE_DIR: str = os.path.expanduser("~/.cache/invoice_processor/models")
