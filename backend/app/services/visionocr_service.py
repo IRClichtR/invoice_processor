@@ -15,7 +15,7 @@ import gc
 import time
 import re
 import json
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoModelForImageTextToText, AutoProcessor
 from app.core.config import settings
 
 logger = structlog.get_logger(__name__)
@@ -29,7 +29,7 @@ class VisionOCRService:
     def __init__(self):
         self.model_name = settings.VISIONOCR_MODEL
         self.model = None
-        self.tokenizer = None
+        self.processor = None
         self.cache_dir = settings.MODEL_CACHE_DIR
 
         os.makedirs(self.cache_dir, exist_ok=True)
@@ -45,13 +45,13 @@ class VisionOCRService:
             if self.model is None:
                 logger.info("Loading VisionOCR model", model=self.model_name, cache_dir=self.cache_dir)
 
-                self.tokenizer = AutoTokenizer.from_pretrained(
+                self.processor = AutoProcessor.from_pretrained(
                     self.model_name,
                     trust_remote_code=True,
                     cache_dir=self.cache_dir
                 )
 
-                self.model = AutoModel.from_pretrained(
+                self.model = AutoModelForImageTextToText.from_pretrained(
                     self.model_name,
                     trust_remote_code=True,
                     torch_dtype=torch.float32,
@@ -91,16 +91,29 @@ class VisionOCRService:
                 raise
 
     def _run_inference(self, image: Image.Image) -> Dict[str, Any]:
-        """Run VisionOCR inference on image"""
+        """Run VisionOCR inference on image using HuggingFace generate() API"""
         inference_start = time.time()
 
         try:
-            # GOT-OCR uses chat method for inference
-            ocr_result = self.model.chat(
-                self.tokenizer,
-                image,
-                ocr_type='ocr'
+            # Process image for the model
+            inputs = self.processor(image, return_tensors="pt")
+
+            # Generate OCR output
+            with torch.no_grad():
+                generate_ids = self.model.generate(
+                    **inputs,
+                    do_sample=False,
+                    tokenizer=self.processor.tokenizer,
+                    stop_strings="<|im_end|>",
+                    max_new_tokens=4096,
+                )
+
+            # Decode the generated tokens (skip input tokens)
+            ocr_result = self.processor.decode(
+                generate_ids[0, inputs["input_ids"].shape[1]:],
+                skip_special_tokens=True
             )
+
         except Exception as e:
             logger.error("VisionOCR generate failed", error=str(e))
             import traceback
@@ -110,6 +123,8 @@ class VisionOCRService:
         inference_time = time.time() - inference_start
         logger.info("VisionOCR completed", inference_time_sec=round(inference_time, 2))
 
+        # Clean up
+        del inputs
         gc.collect()
 
         # Parse the OCR result into structured invoice data
