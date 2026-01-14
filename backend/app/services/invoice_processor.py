@@ -109,12 +109,18 @@ class InvoiceProcessor:
         original_filename: str = None
     ) -> Invoice:
         """Save invoice and line items to database"""
+        # Get currency, default to 'XXX' (unidentified per ISO 4217)
+        currency = invoice_data.get('currency', 'XXX')[:3].upper()
+        if not currency or len(currency) != 3:
+            currency = 'XXX'
+
         invoice = Invoice(
             provider=invoice_data.get('provider', '')[:255],
             date=invoice_data.get('date', '')[:50],
             invoice_number=invoice_data.get('invoice_number', '')[:100],
             total_without_vat=invoice_data.get('total_ht'),
             total_with_vat=invoice_data.get('total_ttc'),
+            currency=currency,
             original_filename=original_filename[:255] if original_filename else None,
             raw_vlm_json=invoice_data,
             raw_vlm_response=raw_response

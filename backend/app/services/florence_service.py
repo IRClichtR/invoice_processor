@@ -197,10 +197,74 @@ class FlorenceService:
             'total_ht': total_ht,
             'total_ttc': total_ttc,
             'vat_amount': vat_amount,
+            'currency': self._extract_currency(ocr_text),
             'line_items': self._extract_line_items_improved(words)
         }
 
         return result
+
+    def _extract_currency(self, text: str) -> str:
+        """
+        Extract currency from invoice text (ISO 4217 compliant).
+        Returns 'XXX' if currency cannot be identified.
+        """
+        text_upper = text.upper()
+
+        # Currency symbols and their ISO codes
+        symbol_map = {
+            '€': 'EUR',
+            '$': 'USD',
+            '£': 'GBP',
+            '¥': 'JPY',
+            '₣': 'CHF',
+            '₹': 'INR',
+            '₽': 'RUB',
+            '₩': 'KRW',
+            '₴': 'UAH',
+            '₺': 'TRY',
+            '₿': 'XBT',
+        }
+
+        # Check for currency symbols first (most reliable)
+        for symbol, code in symbol_map.items():
+            if symbol in text:
+                return code
+
+        # Common ISO currency codes to search for
+        iso_codes = [
+            'EUR', 'USD', 'GBP', 'CHF', 'JPY', 'CAD', 'AUD', 'CNY', 'INR',
+            'BRL', 'MXN', 'SGD', 'HKD', 'NOK', 'SEK', 'DKK', 'PLN', 'CZK',
+            'HUF', 'RON', 'BGN', 'HRK', 'RUB', 'TRY', 'ZAR', 'NZD', 'KRW'
+        ]
+
+        # Search for ISO codes in text
+        for code in iso_codes:
+            # Look for code as standalone word or near amounts
+            patterns = [
+                rf'\b{code}\b',  # Standalone code
+                rf'\d+[.,]\d{{2}}\s*{code}',  # Amount followed by code
+                rf'{code}\s*\d+[.,]\d{{2}}',  # Code followed by amount
+            ]
+            for pattern in patterns:
+                if re.search(pattern, text_upper):
+                    return code
+
+        # Currency name patterns (common currencies)
+        name_patterns = {
+            'EUR': [r'\beuros?\b', r'\b€\b'],
+            'USD': [r'\bdollars?\b', r'\busd\b', r'\bus\s*\$'],
+            'GBP': [r'\bpounds?\b', r'\bsterling\b', r'\bgbp\b'],
+            'CHF': [r'\bfrancs?\s*suisses?\b', r'\bchf\b'],
+        }
+
+        text_lower = text.lower()
+        for code, patterns in name_patterns.items():
+            for pattern in patterns:
+                if re.search(pattern, text_lower):
+                    return code
+
+        # Default to XXX (unknown currency per ISO 4217)
+        return 'XXX'
 
     def _extract_provider(self, ocr_text: str, words: List[Dict]) -> str:
         """Extract provider name from top of document"""

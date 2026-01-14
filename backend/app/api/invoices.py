@@ -41,6 +41,7 @@ class InvoiceResponse(BaseModel):
     invoice_number: str | None
     total_without_vat: float | None
     total_with_vat: float | None
+    currency: str = 'XXX'  # ISO 4217 currency code
     original_filename: str | None
     created_at: datetime | None
     updated_at: datetime | None

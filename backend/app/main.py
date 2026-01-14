@@ -29,8 +29,8 @@ app = FastAPI(
 # Initialize database and models at startup
 @app.on_event("startup")
 async def startup_event():
-    logger.info("Initializing database...")
-    init_db()
+    logger.info("Initializing database (resetting to apply schema changes)...")
+    init_db(reset=True)  # Reset DB to apply new currency field
     logger.info("Initializing models...")
     initialize_models()
 
