@@ -238,3 +238,7 @@ If OCR confidence is low:
 ## License
 
 MIT
+
+## TODOS
+- test anthropic handwritting model for handwritten invoices
+- contact https://www.transkribus.org/ for handwritten invoice processing options
