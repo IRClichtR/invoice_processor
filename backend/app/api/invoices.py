@@ -90,6 +90,70 @@ class BatchProcessingResponse(BaseModel):
     results: List[FileProcessingResult]
 
 
+# =========================================================================
+# Multi-step processing models
+# =========================================================================
+
+class QualityDetails(BaseModel):
+    blur_score: float = 0.0
+    contrast_score: float = 0.0
+    word_count: int = 0
+    low_conf_ratio: float = 0.0
+
+
+class QualityAnalysis(BaseModel):
+    quality: str  # 'good', 'low_quality', 'handwritten', 'extremely_low_quality'
+    ocr_confidence: float
+    is_low_quality: bool
+    is_handwritten: bool
+    requires_claude_vision: bool
+    recommendation: str
+    details: QualityDetails
+
+
+class AnalysisResponse(BaseModel):
+    """Response from initial file analysis"""
+    analysis_id: str
+    file_path: str
+    original_filename: str | None
+    page_count: int
+    quality: QualityAnalysis
+    ocr_preview: str
+    claude_vision_available: bool
+    claude_api_key_configured: bool
+    claude_console_url: str
+
+
+class ProcessDecisionRequest(BaseModel):
+    """Request to process file after analysis"""
+    analysis_id: str
+    use_claude_vision: bool
+    api_key: str | None = None  # Optional API key if not configured
+
+
+class ProcessDecisionResponse(BaseModel):
+    """Response from processing with decision"""
+    success: bool
+    document_type: str | None = None
+    invoice_id: int | None = None
+    document_id: int | None = None
+    page_count: int | None = None
+    extracted_data: dict | None = None
+    processing_method: str | None = None  # 'florence' or 'claude_vision'
+    model_used: str | None = None
+    error: str | None = None
+    requires_api_key: bool = False
+    console_url: str | None = None
+
+
+class ClaudeAPIStatusResponse(BaseModel):
+    """Response for Claude API key status check"""
+    configured: bool
+    valid: bool
+    error: str | None = None
+    console_url: str
+
+
 # Supported file extensions
 ALLOWED_EXTENSIONS = {'.pdf', '.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.webp'}
 
@@ -168,6 +232,128 @@ async def upload_invoice(
         raise HTTPException(status_code=500, detail=f"Processing error: {str(e)}")
     finally:
         file.file.close()
+
+
+# =========================================================================
+# Multi-step processing endpoints
+# =========================================================================
+
+def _analyze_file_in_thread(file_path: str, original_filename: str) -> Dict[str, Any]:
+    """Thread-safe file analysis"""
+    processor = InvoiceProcessor()
+    return processor.analyze_file(file_path, original_filename)
+
+
+@router.post("/invoices/analyze", response_model=AnalysisResponse)
+async def analyze_invoice(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    """
+    Step 1: Analyze file quality before processing.
+
+    Returns quality analysis and recommendation for processing method.
+    If document is low quality or handwritten, Claude Vision is recommended.
+
+    Use the returned analysis_id with /invoices/process endpoint to complete processing.
+    """
+    if not _is_allowed_file(file.filename):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid file type. Allowed: PDF, JPG, JPEG, PNG, BMP, TIFF, WEBP"
+        )
+
+    # Check file size
+    try:
+        file.file.seek(0, 2)
+        file_size = file.file.tell()
+        file.file.seek(0)
+        if file_size > MAX_FILE_SIZE_BYTES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File size exceeds {MAX_FILE_SIZE_BYTES // (1024*1024)}MB limit"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error checking file size: {str(e)}")
+
+    # Check for duplicate
+    if (
+        db.query(Invoice).filter(Invoice.original_filename == file.filename).first()
+        or db.query(OtherDocument).filter(OtherDocument.original_filename == file.filename).first()
+    ):
+        raise HTTPException(status_code=400, detail="File with the same name already exists")
+
+    # Save file
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"{timestamp}_{file.filename}"
+    file_path = os.path.join(settings.UPLOAD_DIR, filename)
+
+    try:
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        result = await run_in_threadpool(_analyze_file_in_thread, file_path, file.filename)
+        return AnalysisResponse(**result)
+
+    except Exception as e:
+        logger.error("Analysis error", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Analysis error: {str(e)}")
+    finally:
+        file.file.close()
+
+
+def _process_with_decision_in_thread(
+    analysis_id: str,
+    use_claude_vision: bool,
+    api_key: str | None = None
+) -> Dict[str, Any]:
+    """Thread-safe processing with decision"""
+    db = SessionLocal()
+    try:
+        processor = InvoiceProcessor()
+        return processor.process_with_decision(
+            analysis_id=analysis_id,
+            use_claude_vision=use_claude_vision,
+            db=db,
+            api_key=api_key
+        )
+    finally:
+        db.close()
+
+
+@router.post("/invoices/process", response_model=ProcessDecisionResponse)
+async def process_with_decision(request: ProcessDecisionRequest):
+    """
+    Step 2: Process file based on user decision.
+
+    After analyzing a file with /invoices/analyze, use this endpoint to:
+    - Process with standard Florence-2 (use_claude_vision=false)
+    - Process with Claude Vision for better quality (use_claude_vision=true)
+
+    If Claude Vision is selected but no API key is configured, provide one in api_key field.
+    """
+    result = await run_in_threadpool(
+        _process_with_decision_in_thread,
+        request.analysis_id,
+        request.use_claude_vision,
+        request.api_key
+    )
+    return ProcessDecisionResponse(**result)
+
+
+@router.get("/claude/status", response_model=ClaudeAPIStatusResponse)
+async def get_claude_api_status():
+    """
+    Check Claude API key configuration status.
+
+    Returns whether API key is configured and valid.
+    If not configured, provides URL to obtain an API key.
+    """
+    processor = InvoiceProcessor()
+    status = processor.check_claude_api_status()
+    return ClaudeAPIStatusResponse(**status)
 
 
 @router.get("/invoices", response_model=List[InvoiceResponse])
