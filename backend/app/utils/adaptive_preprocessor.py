@@ -108,62 +108,29 @@ class AdaptivePreprocessor:
         return result_image, report
 
     @classmethod
-    def preprocess_for_ocr(cls, image: Union[Image.Image, np.ndarray], mode: str = 'adaptive') -> Tuple[Image.Image, dict]:
+    def preprocess_for_ocr(cls, image: Union[Image.Image, np.ndarray], mode: str = 'adaptive') -> Image.Image:
         """
         Main preprocessing method with different modes
 
         Args:
             image: Input image
-            mode: 'adaptive', 'gentle', 'aggressive', 'handwritten', 'auto', or 'none'
+            mode: 'adaptive', 'gentle', 'aggressive', or 'none'
 
         Returns:
-            Tuple of (Preprocessed PIL Image, processing report)
+            Preprocessed PIL Image
         """
         preprocessor = ImagePreprocessor()
-        report = {'mode': mode, 'operations': []}
 
         if mode == 'none':
             # Return original
             if isinstance(image, Image.Image):
-                return image, report
-            return preprocessor.cv2_to_pil(image), report
-
-        elif mode == 'auto':
-            # Auto-detect if handwritten and apply appropriate preprocessing
-            if isinstance(image, Image.Image):
-                cv2_image = preprocessor.pil_to_cv2(image)
-            else:
-                cv2_image = image.copy()
-
-            is_handwritten, metrics = preprocessor.detect_handwritten(cv2_image)
-            report['handwritten_detection'] = metrics
-            report['is_handwritten'] = is_handwritten
-
-            if is_handwritten:
-                result, hw_report = preprocessor.preprocess_handwritten(cv2_image)
-                report['operations'] = hw_report['operations_applied']
-                report['rotation_angle'] = hw_report.get('rotation_angle', 0)
-                return result, report
-            else:
-                # Fall back to adaptive for non-handwritten
-                result, adapt_report = cls.smart_preprocess(cv2_image)
-                report['operations'] = adapt_report['operations_applied']
-                return result, report
-
-        elif mode == 'handwritten':
-            # Force handwritten preprocessing
-            result, hw_report = preprocessor.preprocess_handwritten(image)
-            report['operations'] = hw_report['operations_applied']
-            report['rotation_angle'] = hw_report.get('rotation_angle', 0)
-            report['blue_ink_detected'] = hw_report.get('blue_ink_detected', False)
-            return result, report
+                return image
+            return preprocessor.cv2_to_pil(image)
 
         elif mode == 'adaptive':
             # Smart preprocessing based on quality assessment
-            result, adapt_report = cls.smart_preprocess(image)
-            report['operations'] = adapt_report['operations_applied']
-            report['quality_metrics'] = adapt_report.get('quality_metrics', {})
-            return result, report
+            result, _ = cls.smart_preprocess(image)
+            return result
 
         elif mode == 'gentle':
             # Gentle preprocessing for high-quality scans
@@ -174,20 +141,17 @@ class AdaptivePreprocessor:
 
             # Only gentle CLAHE
             processed = preprocessor.apply_clahe(cv2_image, clip_limit=1.2)
-            report['operations'] = ['gentle_clahe']
-            return preprocessor.cv2_to_pil(processed), report
+            return preprocessor.cv2_to_pil(processed)
 
         elif mode == 'aggressive':
             # Full preprocessing for poor quality scans
-            result = preprocessor.preprocess(
+            return preprocessor.preprocess(
                 image,
                 apply_deskew=True,
                 apply_clahe_filter=True,
                 apply_denoise_filter=True,
                 apply_binarize=True
             )
-            report['operations'] = ['deskew', 'clahe', 'denoise', 'binarize']
-            return result, report
 
         else:
-            raise ValueError(f"Unknown mode: {mode}. Use 'auto', 'adaptive', 'gentle', 'aggressive', 'handwritten', or 'none'")
+            raise ValueError(f"Unknown mode: {mode}. Use 'adaptive', 'gentle', 'aggressive', or 'none'")
