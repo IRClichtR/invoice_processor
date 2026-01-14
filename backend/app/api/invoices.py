@@ -19,7 +19,6 @@ from app.services.invoice_processor import InvoiceProcessor
 
 router = APIRouter()
 MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024  # 20 MB
-ALLOWED_EXTENSIONS = (".pdf", ".jpg", ".jpeg")
 
 logger = structlog.get_logger(__name__)
 
@@ -42,7 +41,6 @@ class InvoiceResponse(BaseModel):
     invoice_number: str | None
     total_without_vat: float | None
     total_with_vat: float | None
-    currency: str = "EUR"
     original_filename: str | None
     created_at: datetime | None
     updated_at: datetime | None
@@ -109,13 +107,13 @@ async def upload_invoice(
     db: Session = Depends(get_db),
 ):
     """
-    Upload and process an invoice PDF or JPEG
+    Upload and process an invoice PDF
 
-    Pipeline: PDF/JPEG -> Image -> Florence-2 -> SQLite
+    Pipeline: PDF -> Image -> Qwen2-VL -> SQLite
     """
-    if not file.filename.lower().endswith(ALLOWED_EXTENSIONS):
+    if not file.filename.endswith(".pdf"):
         logger.warning("Invalid file type uploaded", filename=file.filename)
-        raise HTTPException(status_code=400, detail="Only PDF and JPEG files are allowed")
+        raise HTTPException(status_code=400, detail="Only PDF files are allowed")
 
     # Check file size
     try:
@@ -192,6 +190,7 @@ def get_other_document(document_id: int, db: Session = Depends(get_db)):
 
 @router.delete("/invoices/{invoice_id}")
 def delete_invoice(invoice_id: int, db: Session = Depends(get_db)):
+    """Delete an invoice and its line items"""
     invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
@@ -199,14 +198,7 @@ def delete_invoice(invoice_id: int, db: Session = Depends(get_db)):
     db.delete(invoice)
     db.commit()
     return {"message": "Invoice deleted successfully"}
-    
-@router.delete("/other-documents/{document_id}")
-def delete_other_document(document_id: int, db: Session = Depends(get_db)):
-    document = db.query(OtherDocument).filter(OtherDocument.id == document_id).first()
-    if not document:
-        raise HTTPException(status_code=404, detail="Document not found")
-    db.delete(document)
-    return {"message": "Document deleted successfully"}
+
 
 def process_single_pdf(pdf_path: str, filename: str) -> FileProcessingResult:
     """Process a single PDF file with its own database session"""
@@ -241,7 +233,7 @@ def process_single_pdf(pdf_path: str, filename: str) -> FileProcessingResult:
 
 @router.post("/invoices/batch-upload", response_model=BatchProcessingResponse)
 async def batch_upload_invoices(files: List[UploadFile] = File(...), max_workers: int = 4):
-    """Batch upload and process multiple PDF or JPEG files"""
+    """Batch upload and process multiple PDF files"""
     import time
     batch_start_time = time.time()
 
@@ -249,10 +241,10 @@ async def batch_upload_invoices(files: List[UploadFile] = File(...), max_workers
         raise HTTPException(status_code=400, detail="No files provided")
 
     for file in files:
-        if not file.filename.lower().endswith(ALLOWED_EXTENSIONS):
+        if not file.filename.endswith(".pdf"):
             raise HTTPException(
                 status_code=400,
-                detail=f"Only PDF and JPEG files are allowed. Invalid file: {file.filename}",
+                detail=f"Only PDF files are allowed. Invalid file: {file.filename}",
             )
 
     saved_files = []
@@ -308,7 +300,7 @@ async def batch_upload_invoices(files: List[UploadFile] = File(...), max_workers
 
 @router.post("/invoices/batch-upload-zip", response_model=BatchProcessingResponse)
 async def batch_upload_from_zip(file: UploadFile = File(...), max_workers: int = 4):
-    """Upload a ZIP file containing multiple PDF or JPEG invoices"""
+    """Upload a ZIP file containing multiple PDF invoices"""
     import time
     batch_start_time = time.time()
 
@@ -326,25 +318,25 @@ async def batch_upload_from_zip(file: UploadFile = File(...), max_workers: int =
             with zipfile.ZipFile(zip_path, "r") as zip_ref:
                 zip_ref.extractall(temp_dir)
 
-            document_files = []
+            pdf_files = []
             for root, dirs, files in os.walk(temp_dir):
                 for filename in files:
-                    if filename.lower().endswith(ALLOWED_EXTENSIONS):
-                        file_path = os.path.join(root, filename)
+                    if filename.endswith(".pdf"):
+                        pdf_path = os.path.join(root, filename)
                         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                         new_filename = f"{timestamp}_{filename}"
                         new_path = os.path.join(settings.UPLOAD_DIR, new_filename)
-                        shutil.copy2(file_path, new_path)
-                        document_files.append((new_path, filename))
+                        shutil.copy2(pdf_path, new_path)
+                        pdf_files.append((new_path, filename))
 
-            if not document_files:
-                raise HTTPException(status_code=400, detail="No PDF or JPEG files found in ZIP archive")
+            if not pdf_files:
+                raise HTTPException(status_code=400, detail="No PDF files found in ZIP archive")
 
             results = []
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 future_to_file = {
                     executor.submit(process_single_pdf, file_path, original_name): (file_path, original_name)
-                    for file_path, original_name in document_files
+                    for file_path, original_name in pdf_files
                 }
 
                 for future in as_completed(future_to_file):
