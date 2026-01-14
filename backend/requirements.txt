@@ -1,3 +1,4 @@
+python_dotenv==1.2.1
 fastapi==0.109.0
 uvicorn[standard]==0.27.0
 sqlalchemy==2.0.25
@@ -18,3 +19,4 @@ structlog
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.5.1+cpu
 torchvision==0.20.1+cpu
+anthropic==0.76.0
