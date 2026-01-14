@@ -206,7 +206,6 @@ def delete_other_document(document_id: int, db: Session = Depends(get_db)):
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
     db.delete(document)
-    db.commit()
     return {"message": "Document deleted successfully"}
 
 def process_single_pdf(pdf_path: str, filename: str) -> FileProcessingResult:
