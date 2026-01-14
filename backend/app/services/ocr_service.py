@@ -8,6 +8,8 @@ from typing import Dict, List, Any
 import structlog
 import time
 
+from app.core.config import settings
+
 logger = structlog.get_logger(__name__)
 
 
@@ -16,6 +18,8 @@ class OCRService:
 
     def __init__(self, lang: str = "fra+eng"):
         self.lang = lang
+        # Use threshold from config
+        self.low_confidence_threshold = settings.OCR_LOW_CONFIDENCE_THRESHOLD
 
     def extract_spatial_text(self, image: Image.Image) -> Dict[str, Any]:
         """
@@ -25,7 +29,13 @@ class OCRService:
             {
                 'full_text': str,
                 'spatial_grid': str,  # Formatted for VLM context
-                'words': List[Dict]   # Raw word data
+                'words': List[Dict],  # Raw word data
+                'confidence': {
+                    'average': float,      # Average confidence (0-100)
+                    'word_count': int,     # Total words detected
+                    'low_conf_ratio': float,  # Ratio of low-confidence words
+                    'is_low_quality': bool,   # True if below threshold
+                }
             }
         """
         if image.mode != 'RGB':
@@ -44,11 +54,17 @@ class OCRService:
         )
 
         words = []
+        all_confidences = []  # Track all confidences for analysis
+
         for i in range(len(data['text'])):
             text = data['text'][i].strip()
             conf = int(data['conf'][i])
 
-            # Skip empty or low-confidence words
+            # Track confidence for non-empty text (even if low)
+            if text and conf >= 0:
+                all_confidences.append(conf)
+
+            # Skip empty or very low-confidence words for extraction
             if not text or conf < 30:
                 continue
 
@@ -67,6 +83,9 @@ class OCRService:
                 'conf': conf
             })
 
+        # Calculate confidence metrics
+        confidence_metrics = self._calculate_confidence_metrics(all_confidences, words)
+
         # Build spatial grid string for VLM
         spatial_grid = self._build_spatial_grid(words)
 
@@ -74,12 +93,45 @@ class OCRService:
         full_text = pytesseract.image_to_string(image, lang=self.lang)
 
         ocr_time = time.time() - ocr_start
-        logger.info("OCR completed", word_count=len(words), text_length=len(full_text), ocr_time_sec=round(ocr_time, 2))
+        logger.info(
+            "OCR completed",
+            word_count=len(words),
+            text_length=len(full_text),
+            avg_confidence=confidence_metrics['average'],
+            is_low_quality=confidence_metrics['is_low_quality'],
+            ocr_time_sec=round(ocr_time, 2)
+        )
 
         return {
             'full_text': full_text.strip(),
             'spatial_grid': spatial_grid,
-            'words': words
+            'words': words,
+            'confidence': confidence_metrics
+        }
+
+    def _calculate_confidence_metrics(
+        self,
+        all_confidences: List[int],
+        words: List[Dict]
+    ) -> Dict[str, Any]:
+        """Calculate OCR confidence metrics"""
+        if not all_confidences:
+            return {
+                'average': 0.0,
+                'word_count': 0,
+                'low_conf_ratio': 1.0,
+                'is_low_quality': True
+            }
+
+        avg_confidence = sum(all_confidences) / len(all_confidences)
+        low_conf_count = sum(1 for c in all_confidences if c < self.low_confidence_threshold)
+        low_conf_ratio = low_conf_count / len(all_confidences)
+
+        return {
+            'average': round(avg_confidence, 2),
+            'word_count': len(words),
+            'low_conf_ratio': round(low_conf_ratio, 3),
+            'is_low_quality': avg_confidence < self.low_confidence_threshold
         }
 
     def _build_spatial_grid(self, words: List[Dict]) -> str:
