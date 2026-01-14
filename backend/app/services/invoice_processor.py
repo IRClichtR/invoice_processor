@@ -19,12 +19,104 @@ logger = structlog.get_logger(__name__)
 
 
 class InvoiceProcessor:
-    """Process invoices: PDF -> Image -> OCR -> Florence-2 -> SQLite"""
+    """Process invoices: PDF/Image -> OCR -> Florence-2 -> SQLite"""
+
+    # Supported image extensions
+    IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.webp'}
 
     def __init__(self):
         self.pdf_converter = PDFConverter()
         self.ocr_service = OCRService()
         self.florence_service = get_florence_service()
+
+    @classmethod
+    def is_image_file(cls, filename: str) -> bool:
+        """Check if filename has an image extension"""
+        import os
+        ext = os.path.splitext(filename.lower())[1]
+        return ext in cls.IMAGE_EXTENSIONS
+
+    @classmethod
+    def is_pdf_file(cls, filename: str) -> bool:
+        """Check if filename has a PDF extension"""
+        return filename.lower().endswith('.pdf')
+
+    def process_file(
+        self,
+        file_path: str,
+        db: Session,
+        original_filename: str = None
+    ) -> Dict[str, Any]:
+        """
+        Process a file (PDF or image) through the pipeline.
+        Automatically detects file type and routes to appropriate processor.
+
+        Args:
+            file_path: Path to file
+            db: Database session
+            original_filename: Original filename
+
+        Returns:
+            Processing result with database ID
+        """
+        if self.is_image_file(file_path):
+            return self.process_image(file_path, db, original_filename)
+        else:
+            return self.process_pdf(file_path, db, original_filename)
+
+    def process_image(
+        self,
+        image_path: str,
+        db: Session,
+        original_filename: str = None
+    ) -> Dict[str, Any]:
+        """
+        Process an image file directly (skip PDF conversion).
+
+        Args:
+            image_path: Path to image file
+            db: Database session
+            original_filename: Original filename
+
+        Returns:
+            Processing result with database ID
+        """
+        result = {
+            'success': False,
+            'image_path': image_path
+        }
+
+        try:
+            # Step 1: Load image directly
+            logger.info("Loading image file", image_path=image_path)
+            image = Image.open(image_path)
+            if image.mode != 'RGB':
+                image = image.convert('RGB')
+            result['page_count'] = 1
+
+            # Step 2: OCR with spatial positions
+            logger.info("Running OCR extraction")
+            ocr_result = self.ocr_service.extract_spatial_text(image)
+
+            # Step 3: Florence-2 with dual modality (image + OCR context)
+            logger.info("Running Florence-2 extraction")
+            florence_result = self.florence_service.extract_invoice_data(
+                image=image,
+                ocr_text=ocr_result['full_text'],
+                spatial_grid=ocr_result['spatial_grid'],
+                words=ocr_result['words']
+            )
+            invoice_data = florence_result['structured_data']
+
+            # Step 4: Save to database
+            result = self._save_to_database(db, invoice_data, florence_result, original_filename, result)
+
+        except Exception as e:
+            logger.error("Processing failed", error=str(e))
+            result['success'] = False
+            result['error'] = str(e)
+
+        return result
 
     def process_pdf(
         self,
@@ -69,35 +161,48 @@ class InvoiceProcessor:
             invoice_data = florence_result['structured_data']
 
             # Step 4: Save to database
-            if not invoice_data.get('is_invoice', True):
-                # Not an invoice - save as other document
-                other_doc = self._save_other_document(
-                    db,
-                    florence_result.get('raw_response', ''),
-                    original_filename
-                )
-                result['success'] = True
-                result['document_type'] = 'other'
-                result['document_id'] = other_doc.id
-                logger.info("Saved as other document", document_id=other_doc.id)
-            else:
-                # Invoice - save with line items
-                invoice = self._save_invoice(
-                    db,
-                    invoice_data,
-                    florence_result.get('raw_response', ''),
-                    original_filename
-                )
-                result['success'] = True
-                result['document_type'] = 'invoice'
-                result['invoice_id'] = invoice.id
-                result['extracted_data'] = invoice_data
-                logger.info("Saved invoice", invoice_id=invoice.id, provider=invoice_data.get('provider'))
+            result = self._save_to_database(db, invoice_data, florence_result, original_filename, result)
 
         except Exception as e:
             logger.error("Processing failed", error=str(e))
             result['success'] = False
             result['error'] = str(e)
+
+        return result
+
+    def _save_to_database(
+        self,
+        db: Session,
+        invoice_data: Dict[str, Any],
+        florence_result: Dict[str, Any],
+        original_filename: str,
+        result: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Save extracted data to database"""
+        if not invoice_data.get('is_invoice', True):
+            # Not an invoice - save as other document
+            other_doc = self._save_other_document(
+                db,
+                florence_result.get('raw_response', ''),
+                original_filename
+            )
+            result['success'] = True
+            result['document_type'] = 'other'
+            result['document_id'] = other_doc.id
+            logger.info("Saved as other document", document_id=other_doc.id)
+        else:
+            # Invoice - save with line items
+            invoice = self._save_invoice(
+                db,
+                invoice_data,
+                florence_result.get('raw_response', ''),
+                original_filename
+            )
+            result['success'] = True
+            result['document_type'] = 'invoice'
+            result['invoice_id'] = invoice.id
+            result['extracted_data'] = invoice_data
+            logger.info("Saved invoice", invoice_id=invoice.id, provider=invoice_data.get('provider'))
 
         return result
 

@@ -90,13 +90,23 @@ class BatchProcessingResponse(BaseModel):
     results: List[FileProcessingResult]
 
 
+# Supported file extensions
+ALLOWED_EXTENSIONS = {'.pdf', '.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.webp'}
+
+
+def _is_allowed_file(filename: str) -> bool:
+    """Check if filename has an allowed extension"""
+    ext = os.path.splitext(filename.lower())[1]
+    return ext in ALLOWED_EXTENSIONS
+
+
 def _process_upload_in_thread(file_path: str, original_filename: str) -> Dict[str, Any]:
     """Thread-safe processing with its own database session"""
     db = SessionLocal()
     try:
         logger.info("Processing uploaded file in threadpool", filename=original_filename)
         processor = InvoiceProcessor()
-        result = processor.process_pdf(file_path, db, original_filename)
+        result = processor.process_file(file_path, db, original_filename)
         return result
     finally:
         db.close()
@@ -108,13 +118,16 @@ async def upload_invoice(
     db: Session = Depends(get_db),
 ):
     """
-    Upload and process an invoice PDF
+    Upload and process an invoice PDF or image
 
-    Pipeline: PDF -> Image -> Qwen2-VL -> SQLite
+    Pipeline: PDF/Image -> OCR -> Florence-2 -> SQLite
     """
-    if not file.filename.endswith(".pdf"):
+    if not _is_allowed_file(file.filename):
         logger.warning("Invalid file type uploaded", filename=file.filename)
-        raise HTTPException(status_code=400, detail="Only PDF files are allowed")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid file type. Allowed: PDF, JPG, JPEG, PNG, BMP, TIFF, WEBP"
+        )
 
     # Check file size
     try:
@@ -201,15 +214,15 @@ def delete_invoice(invoice_id: int, db: Session = Depends(get_db)):
     return {"message": "Invoice deleted successfully"}
 
 
-def process_single_pdf(pdf_path: str, filename: str) -> FileProcessingResult:
-    """Process a single PDF file with its own database session"""
+def process_single_file(file_path: str, filename: str) -> FileProcessingResult:
+    """Process a single PDF or image file with its own database session"""
     import time
     start_time = time.time()
     db = SessionLocal()
 
     try:
         processor = InvoiceProcessor()
-        result = processor.process_pdf(pdf_path, db, original_filename=filename)
+        result = processor.process_file(file_path, db, original_filename=filename)
         processing_time = time.time() - start_time
 
         return FileProcessingResult(
@@ -234,7 +247,7 @@ def process_single_pdf(pdf_path: str, filename: str) -> FileProcessingResult:
 
 @router.post("/invoices/batch-upload", response_model=BatchProcessingResponse)
 async def batch_upload_invoices(files: List[UploadFile] = File(...), max_workers: int = 4):
-    """Batch upload and process multiple PDF files"""
+    """Batch upload and process multiple PDF or image files"""
     import time
     batch_start_time = time.time()
 
@@ -242,10 +255,10 @@ async def batch_upload_invoices(files: List[UploadFile] = File(...), max_workers
         raise HTTPException(status_code=400, detail="No files provided")
 
     for file in files:
-        if not file.filename.endswith(".pdf"):
+        if not _is_allowed_file(file.filename):
             raise HTTPException(
                 status_code=400,
-                detail=f"Only PDF files are allowed. Invalid file: {file.filename}",
+                detail=f"Invalid file type: {file.filename}. Allowed: PDF, JPG, JPEG, PNG, BMP, TIFF, WEBP",
             )
 
     saved_files = []
@@ -265,7 +278,7 @@ async def batch_upload_invoices(files: List[UploadFile] = File(...), max_workers
         results = []
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_file = {
-                executor.submit(process_single_pdf, file_path, original_name): (file_path, original_name)
+                executor.submit(process_single_file, file_path, original_name): (file_path, original_name)
                 for file_path, original_name in saved_files
             }
 
@@ -301,7 +314,7 @@ async def batch_upload_invoices(files: List[UploadFile] = File(...), max_workers
 
 @router.post("/invoices/batch-upload-zip", response_model=BatchProcessingResponse)
 async def batch_upload_from_zip(file: UploadFile = File(...), max_workers: int = 4):
-    """Upload a ZIP file containing multiple PDF invoices"""
+    """Upload a ZIP file containing multiple PDF or image invoices"""
     import time
     batch_start_time = time.time()
 
@@ -319,25 +332,25 @@ async def batch_upload_from_zip(file: UploadFile = File(...), max_workers: int =
             with zipfile.ZipFile(zip_path, "r") as zip_ref:
                 zip_ref.extractall(temp_dir)
 
-            pdf_files = []
+            extracted_files = []
             for root, dirs, files in os.walk(temp_dir):
                 for filename in files:
-                    if filename.endswith(".pdf"):
-                        pdf_path = os.path.join(root, filename)
+                    if _is_allowed_file(filename):
+                        source_path = os.path.join(root, filename)
                         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                         new_filename = f"{timestamp}_{filename}"
                         new_path = os.path.join(settings.UPLOAD_DIR, new_filename)
-                        shutil.copy2(pdf_path, new_path)
-                        pdf_files.append((new_path, filename))
+                        shutil.copy2(source_path, new_path)
+                        extracted_files.append((new_path, filename))
 
-            if not pdf_files:
-                raise HTTPException(status_code=400, detail="No PDF files found in ZIP archive")
+            if not extracted_files:
+                raise HTTPException(status_code=400, detail="No valid files found in ZIP archive. Allowed: PDF, JPG, JPEG, PNG, BMP, TIFF, WEBP")
 
             results = []
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 future_to_file = {
-                    executor.submit(process_single_pdf, file_path, original_name): (file_path, original_name)
-                    for file_path, original_name in pdf_files
+                    executor.submit(process_single_file, file_path, original_name): (file_path, original_name)
+                    for file_path, original_name in extracted_files
                 }
 
                 for future in as_completed(future_to_file):
