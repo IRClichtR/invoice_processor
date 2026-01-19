@@ -1,11 +1,20 @@
+"""
+Invoice API - Two-step document processing workflow.
+
+Endpoints:
+- POST /analyze: Step 1 - Analyze document quality
+- POST /process: Step 2 - Process with chosen pipeline
+- GET /jobs/{id}/status: Check job status
+- POST /cleanup: Manual cleanup of expired jobs
+- GET /cleanup/stats: Temp directory statistics
+- CRUD operations for invoices and other documents
+"""
+
 import os
 import shutil
-import tempfile
-import zipfile
 import structlog
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
@@ -14,13 +23,20 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.base import SessionLocal, get_db
-from app.models.invoice import Invoice, InvoiceLine, OtherDocument
-from app.services.invoice_processor import InvoiceProcessor
+from app.models.invoice import Invoice, OtherDocument
+from app.services.analysis_service import AnalysisService
+from app.services.processing_service import ProcessingService
+from app.services.cleanup_service import CleanupService
 
 router = APIRouter()
 MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024  # 20 MB
 
 logger = structlog.get_logger(__name__)
+
+
+# =========================================================================
+# Response Models
+# =========================================================================
 
 class InvoiceLineResponse(BaseModel):
     id: int
@@ -41,7 +57,7 @@ class InvoiceResponse(BaseModel):
     invoice_number: str | None
     total_without_vat: float | None
     total_with_vat: float | None
-    currency: str = 'XXX'  # ISO 4217 currency code
+    currency: str = 'XXX'
     original_filename: str | None
     created_at: datetime | None
     updated_at: datetime | None
@@ -62,99 +78,87 @@ class OtherDocumentResponse(BaseModel):
         from_attributes = True
 
 
-class ProcessingResultResponse(BaseModel):
-    success: bool
-    document_type: str | None = None
-    invoice_id: int | None = None
-    document_id: int | None = None
-    page_count: int | None = None
-    extracted_data: dict | None = None
-    error: str | None = None
-
-
-class FileProcessingResult(BaseModel):
-    filename: str
-    success: bool
-    document_type: str | None = None
-    invoice_id: int | None = None
-    document_id: int | None = None
-    error: str | None = None
-    processing_time: float = 0.0
-
-
-class BatchProcessingResponse(BaseModel):
-    total_files: int
-    successful: int
-    failed: int
-    processing_time_seconds: float
-    results: List[FileProcessingResult]
-
-
-# =========================================================================
-# Multi-step processing models
-# =========================================================================
-
 class QualityDetails(BaseModel):
+    """Quality analysis details"""
     blur_score: float = 0.0
     contrast_score: float = 0.0
     word_count: int = 0
     low_conf_ratio: float = 0.0
 
 
-class QualityAnalysis(BaseModel):
-    quality: str  # 'good', 'low_quality', 'handwritten', 'extremely_low_quality'
-    ocr_confidence: float
-    is_low_quality: bool
+class AnalyzeResponse(BaseModel):
+    """Response from /analyze endpoint (Step 1)"""
+    job_id: str
+    confidence_score: float
     is_handwritten: bool
-    requires_claude_vision: bool
-    recommendation: str
-    details: QualityDetails
-
-
-class AnalysisResponse(BaseModel):
-    """Response from initial file analysis"""
-    analysis_id: str
-    file_path: str
-    original_filename: str | None
+    is_low_quality: bool
+    suggested_pipeline: str  # 'florence' or 'claude'
+    preview_text: str  # First 500 characters
+    word_count: int
     page_count: int
-    quality: QualityAnalysis
-    ocr_preview: str
-    claude_vision_available: bool
-    claude_api_key_configured: bool
-    claude_console_url: str
+    expires_at: str | None
+    quality_classification: str
+    quality_details: QualityDetails
+    claude_available: bool
+    claude_configured: bool
+    original_filename: str | None
 
 
-class ProcessDecisionRequest(BaseModel):
-    """Request to process file after analysis"""
-    analysis_id: str
-    use_claude_vision: bool
-    api_key: str | None = None  # Optional API key if not configured
+class ProcessRequest(BaseModel):
+    """Request to process a job (Step 2)"""
+    job_id: str
+    pipeline: Literal['florence', 'claude']
+    save_to_db: bool = True
 
 
-class ProcessDecisionResponse(BaseModel):
-    """Response from processing with decision"""
+class ProcessResponse(BaseModel):
+    """Response from /process endpoint (Step 2)"""
     success: bool
-    document_type: str | None = None
     invoice_id: int | None = None
     document_id: int | None = None
-    page_count: int | None = None
     extracted_data: dict | None = None
-    processing_method: str | None = None  # 'florence' or 'claude_vision'
-    model_used: str | None = None
+    processing_method: str | None = None
     error: str | None = None
     requires_api_key: bool = False
     console_url: str | None = None
 
 
-class ClaudeAPIStatusResponse(BaseModel):
-    """Response for Claude API key status check"""
-    configured: bool
-    valid: bool
+class JobStatusResponse(BaseModel):
+    """Response from job status check"""
+    found: bool
+    job_id: str | None = None
+    status: str | None = None
+    is_expired: bool = False
+    can_be_processed: bool = False
+    result_invoice_id: int | None = None
+    result_document_id: int | None = None
+    processing_method: str | None = None
+    processing_error: str | None = None
+    created_at: str | None = None
+    expires_at: str | None = None
+    completed_at: str | None = None
     error: str | None = None
-    console_url: str
 
 
-# Supported file extensions
+class CleanupResponse(BaseModel):
+    """Response from cleanup endpoint"""
+    expired_jobs_cleaned: int
+    files_deleted: int
+    errors: List[str] = []
+
+
+class TempDirStatsResponse(BaseModel):
+    """Response with temp directory stats"""
+    exists: bool
+    file_count: int
+    total_size_mb: float
+    path: str
+
+
+# =========================================================================
+# Helpers
+# =========================================================================
+
 ALLOWED_EXTENSIONS = {'.pdf', '.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.webp'}
 
 
@@ -164,98 +168,56 @@ def _is_allowed_file(filename: str) -> bool:
     return ext in ALLOWED_EXTENSIONS
 
 
-def _process_upload_in_thread(file_path: str, original_filename: str) -> Dict[str, Any]:
-    """Thread-safe processing with its own database session"""
+def _analyze_document_in_thread(file_path: str, original_filename: str) -> Dict[str, Any]:
+    """Thread-safe document analysis with database persistence"""
     db = SessionLocal()
     try:
-        logger.info("Processing uploaded file in threadpool", filename=original_filename)
-        processor = InvoiceProcessor()
-        result = processor.process_file(file_path, db, original_filename)
-        return result
+        analysis_service = AnalysisService()
+        job = analysis_service.analyze_document(file_path, original_filename, db)
+
+        # Check Claude availability
+        claude_available, claude_configured = analysis_service.check_claude_availability(db)
+
+        return job.to_analysis_response(claude_available, claude_configured)
     finally:
         db.close()
 
 
-@router.post("/invoices/upload", response_model=ProcessingResultResponse)
-async def upload_invoice(
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-):
-    """
-    Upload and process an invoice PDF or image
-
-    Pipeline: PDF/Image -> OCR -> Florence-2 -> SQLite
-    """
-    if not _is_allowed_file(file.filename):
-        logger.warning("Invalid file type uploaded", filename=file.filename)
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid file type. Allowed: PDF, JPG, JPEG, PNG, BMP, TIFF, WEBP"
-        )
-
-    # Check file size
+def _process_job_in_thread(job_id: str, pipeline: str, save_to_db: bool) -> Dict[str, Any]:
+    """Thread-safe job processing"""
+    db = SessionLocal()
     try:
-        file.file.seek(0, 2)
-        file_size = file.file.tell()
-        file.file.seek(0)
-        if file_size > MAX_FILE_SIZE_BYTES:
-            logger.warning("File size exceeds limit", filename=file.filename, size=file_size)
-            raise HTTPException(
-                status_code=400,
-                detail=f"File size ({file_size / (1024*1024):.2f}MB) exceeds maximum limit of {MAX_FILE_SIZE_BYTES // (1024*1024)}MB"
-            )
-    except Exception as e:
-        logger.error("Error checking file size", filename=file.filename, error=str(e))
-        raise HTTPException(status_code=400, detail=f"Unable to determine file size: {str(e)}")
-
-    # Check for duplicate filename
-    if (
-        db.query(Invoice).filter(Invoice.original_filename == file.filename).first()
-        or db.query(OtherDocument).filter(OtherDocument.original_filename == file.filename).first()
-    ):
-        raise HTTPException(status_code=400, detail="File with the same name already exists")
-
-    # Save uploaded file
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"{timestamp}_{file.filename}"
-    file_path = os.path.join(settings.UPLOAD_DIR, filename)
-    logger.info("Saving uploaded file", filename=file.filename)
-
-    try:
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-
-        result = await run_in_threadpool(_process_upload_in_thread, file_path, file.filename)
-        return ProcessingResultResponse(**result)
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Processing error: {str(e)}")
+        processing_service = ProcessingService()
+        return processing_service.process_job(job_id, pipeline, save_to_db, db)
     finally:
-        file.file.close()
+        db.close()
 
 
 # =========================================================================
-# Multi-step processing endpoints
+# Two-Step Workflow Endpoints
 # =========================================================================
 
-def _analyze_file_in_thread(file_path: str, original_filename: str) -> Dict[str, Any]:
-    """Thread-safe file analysis"""
-    processor = InvoiceProcessor()
-    return processor.analyze_file(file_path, original_filename)
-
-
-@router.post("/invoices/analyze", response_model=AnalysisResponse)
-async def analyze_invoice(
+@router.post("/analyze", response_model=AnalyzeResponse)
+async def analyze_document(
     file: UploadFile = File(...),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db)
 ):
     """
-    Step 1: Analyze file quality before processing.
+    Step 1: Analyze document quality and OCR confidence.
 
-    Returns quality analysis and recommendation for processing method.
-    If document is low quality or handwritten, Claude Vision is recommended.
+    This endpoint:
+    1. Saves the uploaded file to temp storage
+    2. Runs OCR and quality analysis
+    3. Calculates confidence score
+    4. Returns job_id for use with /process endpoint
 
-    Use the returned analysis_id with /invoices/process endpoint to complete processing.
+    The job expires after 1 hour if not processed.
+
+    Response includes:
+    - job_id: Use this with /process endpoint
+    - confidence_score: 0-1 score indicating OCR quality
+    - suggested_pipeline: 'florence' or 'claude' based on quality
+    - claude_available: Whether Claude API is configured and valid
     """
     if not _is_allowed_file(file.filename):
         raise HTTPException(
@@ -278,14 +240,14 @@ async def analyze_invoice(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error checking file size: {str(e)}")
 
-    # Check for duplicate
+    # Check for duplicate filename in existing invoices
     if (
         db.query(Invoice).filter(Invoice.original_filename == file.filename).first()
         or db.query(OtherDocument).filter(OtherDocument.original_filename == file.filename).first()
     ):
         raise HTTPException(status_code=400, detail="File with the same name already exists")
 
-    # Save file
+    # Save file temporarily
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"{timestamp}_{file.filename}"
     file_path = os.path.join(settings.UPLOAD_DIR, filename)
@@ -294,67 +256,128 @@ async def analyze_invoice(
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        result = await run_in_threadpool(_analyze_file_in_thread, file_path, file.filename)
-        return AnalysisResponse(**result)
+        result = await run_in_threadpool(_analyze_document_in_thread, file_path, file.filename)
+
+        # Convert quality_details dict to model
+        quality_details = result.get('quality_details', {})
+        result['quality_details'] = QualityDetails(**quality_details)
+
+        return AnalyzeResponse(**result)
 
     except Exception as e:
         logger.error("Analysis error", error=str(e))
         raise HTTPException(status_code=500, detail=f"Analysis error: {str(e)}")
     finally:
         file.file.close()
+        # Clean up the upload directory copy (job has its own copy in temp dir)
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        except Exception:
+            pass
 
 
-def _process_with_decision_in_thread(
-    analysis_id: str,
-    use_claude_vision: bool,
-    api_key: str | None = None
-) -> Dict[str, Any]:
-    """Thread-safe processing with decision"""
-    db = SessionLocal()
-    try:
-        processor = InvoiceProcessor()
-        return processor.process_with_decision(
-            analysis_id=analysis_id,
-            use_claude_vision=use_claude_vision,
-            db=db,
-            api_key=api_key
-        )
-    finally:
-        db.close()
-
-
-@router.post("/invoices/process", response_model=ProcessDecisionResponse)
-async def process_with_decision(request: ProcessDecisionRequest):
+@router.post("/process", response_model=ProcessResponse)
+async def process_document(request: ProcessRequest):
     """
-    Step 2: Process file based on user decision.
+    Step 2: Process document with chosen pipeline.
 
-    After analyzing a file with /invoices/analyze, use this endpoint to:
-    - Process with standard Florence-2 (use_claude_vision=false)
-    - Process with Claude Vision for better quality (use_claude_vision=true)
+    After analyzing a document with /analyze, use this endpoint to:
+    - Process with Florence-2 (pipeline='florence') - fast, local, good for clear documents
+    - Process with Claude Vision (pipeline='claude') - better for low quality/handwritten
 
-    If Claude Vision is selected but no API key is configured, provide one in api_key field.
+    If Claude is selected but no API key is configured, the response will include
+    requires_api_key=true and console_url for obtaining a key.
+
+    Args:
+        job_id: The job ID from /analyze response
+        pipeline: 'florence' or 'claude'
+        save_to_db: Whether to save extracted invoice to database (default: true)
     """
     result = await run_in_threadpool(
-        _process_with_decision_in_thread,
-        request.analysis_id,
-        request.use_claude_vision,
-        request.api_key
+        _process_job_in_thread,
+        request.job_id,
+        request.pipeline,
+        request.save_to_db
     )
-    return ProcessDecisionResponse(**result)
+    return ProcessResponse(**result)
 
 
-@router.get("/claude/status", response_model=ClaudeAPIStatusResponse)
-async def get_claude_api_status():
+@router.get("/jobs/{job_id}/status", response_model=JobStatusResponse)
+async def get_job_status(job_id: str, db: Session = Depends(get_db)):
     """
-    Check Claude API key configuration status.
+    Get the status of an analysis job.
 
-    Returns whether API key is configured and valid.
-    If not configured, provides URL to obtain an API key.
+    Returns current status, expiration info, and results if completed.
     """
-    processor = InvoiceProcessor()
-    status = processor.check_claude_api_status()
-    return ClaudeAPIStatusResponse(**status)
+    processing_service = ProcessingService()
+    result = processing_service.get_job_status(job_id, db)
+    return JobStatusResponse(**result)
 
+
+# =========================================================================
+# Cleanup Endpoints
+# =========================================================================
+
+@router.post("/cleanup", response_model=CleanupResponse)
+async def cleanup_expired_jobs(db: Session = Depends(get_db)):
+    """
+    Manually trigger cleanup of expired jobs and temp files.
+
+    This endpoint:
+    - Finds all jobs older than 1 hour that weren't processed
+    - Deletes their temp files
+    - Marks them as expired
+    - Cleans up orphaned files
+
+    This is also run automatically at startup.
+    """
+    cleanup_service = CleanupService()
+    result = cleanup_service.full_cleanup(db)
+
+    return CleanupResponse(
+        expired_jobs_cleaned=result['expired_jobs']['jobs_cleaned'],
+        files_deleted=result['total_files_deleted'],
+        errors=result['errors']
+    )
+
+@router.post("/cleanup-force", response_model=CleanupResponse)
+async def force_cleanup_all_jobs(db: Session = Depends(get_db)):
+    """
+    Force cleanup of all jobs and temporary files, regardless of age.
+
+    This endpoint:
+    - Deletes all job temp files
+    - Marks all jobs as expired
+    - Cleans up orphaned files
+
+    Use with caution as this will remove all job data.
+    """
+    cleanup_service = CleanupService()
+    result = cleanup_service.force_cleanup(db)
+
+    return CleanupResponse(
+        expired_jobs_cleaned=result['expired_jobs']['jobs_cleaned'],
+        files_deleted=result['total_files_deleted'],
+        errors=result['errors']
+    )
+
+
+@router.get("/cleanup/stats", response_model=TempDirStatsResponse)
+async def get_temp_dir_stats():
+    """
+    Get statistics about the temporary files directory.
+
+    Useful for monitoring disk usage.
+    """
+    cleanup_service = CleanupService()
+    stats = cleanup_service.get_temp_dir_stats()
+    return TempDirStatsResponse(**stats)
+
+
+# =========================================================================
+# Invoice CRUD Endpoints
+# =========================================================================
 
 @router.get("/invoices", response_model=List[InvoiceResponse])
 def get_invoices(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
@@ -372,6 +395,22 @@ def get_invoice(invoice_id: int, db: Session = Depends(get_db)):
     return invoice
 
 
+@router.delete("/invoices/{invoice_id}")
+def delete_invoice(invoice_id: int, db: Session = Depends(get_db)):
+    """Delete an invoice and its line items"""
+    invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    db.delete(invoice)
+    db.commit()
+    return {"message": "Invoice deleted successfully"}
+
+
+# =========================================================================
+# Other Documents CRUD Endpoints
+# =========================================================================
+
 @router.get("/other-documents", response_model=List[OtherDocumentResponse])
 def get_other_documents(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     """Get list of non-invoice documents"""
@@ -386,186 +425,3 @@ def get_other_document(document_id: int, db: Session = Depends(get_db)):
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
     return document
-
-
-@router.delete("/invoices/{invoice_id}")
-def delete_invoice(invoice_id: int, db: Session = Depends(get_db)):
-    """Delete an invoice and its line items"""
-    invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
-    if not invoice:
-        raise HTTPException(status_code=404, detail="Invoice not found")
-
-    db.delete(invoice)
-    db.commit()
-    return {"message": "Invoice deleted successfully"}
-
-
-def process_single_file(file_path: str, filename: str) -> FileProcessingResult:
-    """Process a single PDF or image file with its own database session"""
-    import time
-    start_time = time.time()
-    db = SessionLocal()
-
-    try:
-        processor = InvoiceProcessor()
-        result = processor.process_file(file_path, db, original_filename=filename)
-        processing_time = time.time() - start_time
-
-        return FileProcessingResult(
-            filename=filename,
-            success=result.get("success", False),
-            document_type=result.get("document_type"),
-            invoice_id=result.get("invoice_id"),
-            document_id=result.get("document_id"),
-            error=result.get("error"),
-            processing_time=processing_time,
-        )
-    except Exception as e:
-        return FileProcessingResult(
-            filename=filename,
-            success=False,
-            error=str(e),
-            processing_time=time.time() - start_time,
-        )
-    finally:
-        db.close()
-
-
-@router.post("/invoices/batch-upload", response_model=BatchProcessingResponse)
-async def batch_upload_invoices(files: List[UploadFile] = File(...), max_workers: int = 4):
-    """Batch upload and process multiple PDF or image files"""
-    import time
-    batch_start_time = time.time()
-
-    if not files:
-        raise HTTPException(status_code=400, detail="No files provided")
-
-    for file in files:
-        if not _is_allowed_file(file.filename):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid file type: {file.filename}. Allowed: PDF, JPG, JPEG, PNG, BMP, TIFF, WEBP",
-            )
-
-    saved_files = []
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-    try:
-        for idx, file in enumerate(files):
-            filename = f"{timestamp}_{idx}_{file.filename}"
-            file_path = os.path.join(settings.UPLOAD_DIR, filename)
-
-            with open(file_path, "wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
-
-            saved_files.append((file_path, file.filename))
-            file.file.close()
-
-        results = []
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_file = {
-                executor.submit(process_single_file, file_path, original_name): (file_path, original_name)
-                for file_path, original_name in saved_files
-            }
-
-            for future in as_completed(future_to_file):
-                try:
-                    result = future.result()
-                    results.append(result)
-                except Exception as e:
-                    file_path, original_name = future_to_file[future]
-                    results.append(FileProcessingResult(
-                        filename=original_name,
-                        success=False,
-                        error=f"Unexpected error: {str(e)}",
-                        processing_time=0.0,
-                    ))
-
-        total_files = len(results)
-        successful = sum(1 for r in results if r.success)
-        failed = total_files - successful
-        total_time = time.time() - batch_start_time
-
-        return BatchProcessingResponse(
-            total_files=total_files,
-            successful=successful,
-            failed=failed,
-            processing_time_seconds=round(total_time, 2),
-            results=results,
-        )
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Batch processing error: {str(e)}")
-
-
-@router.post("/invoices/batch-upload-zip", response_model=BatchProcessingResponse)
-async def batch_upload_from_zip(file: UploadFile = File(...), max_workers: int = 4):
-    """Upload a ZIP file containing multiple PDF or image invoices"""
-    import time
-    batch_start_time = time.time()
-
-    if not file.filename.endswith(".zip"):
-        raise HTTPException(status_code=400, detail="Only ZIP files are allowed")
-
-    with tempfile.TemporaryDirectory() as temp_dir:
-        zip_path = os.path.join(temp_dir, file.filename)
-
-        try:
-            with open(zip_path, "wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
-            file.file.close()
-
-            with zipfile.ZipFile(zip_path, "r") as zip_ref:
-                zip_ref.extractall(temp_dir)
-
-            extracted_files = []
-            for root, dirs, files in os.walk(temp_dir):
-                for filename in files:
-                    if _is_allowed_file(filename):
-                        source_path = os.path.join(root, filename)
-                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        new_filename = f"{timestamp}_{filename}"
-                        new_path = os.path.join(settings.UPLOAD_DIR, new_filename)
-                        shutil.copy2(source_path, new_path)
-                        extracted_files.append((new_path, filename))
-
-            if not extracted_files:
-                raise HTTPException(status_code=400, detail="No valid files found in ZIP archive. Allowed: PDF, JPG, JPEG, PNG, BMP, TIFF, WEBP")
-
-            results = []
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                future_to_file = {
-                    executor.submit(process_single_file, file_path, original_name): (file_path, original_name)
-                    for file_path, original_name in extracted_files
-                }
-
-                for future in as_completed(future_to_file):
-                    try:
-                        result = future.result()
-                        results.append(result)
-                    except Exception as e:
-                        file_path, original_name = future_to_file[future]
-                        results.append(FileProcessingResult(
-                            filename=original_name,
-                            success=False,
-                            error=f"Unexpected error: {str(e)}",
-                            processing_time=0.0,
-                        ))
-
-            total_files = len(results)
-            successful = sum(1 for r in results if r.success)
-            failed = total_files - successful
-            total_time = time.time() - batch_start_time
-
-            return BatchProcessingResponse(
-                total_files=total_files,
-                successful=successful,
-                failed=failed,
-                processing_time_seconds=round(total_time, 2),
-                results=results,
-            )
-
-        except zipfile.BadZipFile:
-            raise HTTPException(status_code=400, detail="Invalid ZIP file")
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Batch processing error: {str(e)}")

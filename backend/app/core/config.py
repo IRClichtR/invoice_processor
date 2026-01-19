@@ -1,9 +1,46 @@
 import os
 from typing import Optional
+from pathlib import Path
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
+
+
+def _get_or_create_encryption_key() -> str:
+    """
+    Get encryption key from env var or generate and store one.
+
+    The key is stored in ~/.config/parsefacture/encryption.key
+    """
+    # Check env var first
+    env_key = os.getenv("API_KEY_ENCRYPTION_KEY")
+    if env_key and len(env_key) >= 32:
+        return env_key
+
+    # Use local file for auto-generated key
+    config_dir = Path.home() / ".config" / "parsefacture"
+    key_file = config_dir / "encryption.key"
+
+    if key_file.exists():
+        return key_file.read_text().strip()
+
+    # Generate new key
+    try:
+        from cryptography.fernet import Fernet
+        new_key = Fernet.generate_key().decode('utf-8')
+    except ImportError:
+        # Fallback if cryptography not installed yet
+        import secrets
+        import base64
+        new_key = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode('utf-8')
+
+    # Store key
+    config_dir.mkdir(parents=True, exist_ok=True)
+    key_file.write_text(new_key)
+    key_file.chmod(0o600)  # Restrict permissions
+
+    return new_key
 
 
 class Settings:
@@ -34,6 +71,15 @@ class Settings:
 
     # OCR Quality thresholds
     OCR_LOW_CONFIDENCE_THRESHOLD: float = float(os.getenv("OCR_LOW_CONFIDENCE_THRESHOLD", "80.0"))
+
+    # Temp directory for analysis job files
+    TEMP_DIR: str = os.getenv("TEMP_DIR", "/tmp/parsefacture")
+
+    # Job expiration time in seconds (default: 1 hour)
+    JOB_EXPIRATION_SECONDS: int = int(os.getenv("JOB_EXPIRATION_SECONDS", "3600"))
+
+    # Encryption key for API keys (auto-generated if not set)
+    API_KEY_ENCRYPTION_KEY: str = _get_or_create_encryption_key()
 
     def has_valid_claude_api_key(self) -> bool:
         """Check if a valid Claude API key is configured"""
