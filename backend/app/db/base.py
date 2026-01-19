@@ -18,6 +18,8 @@ def init_db(reset: bool = False):
     """Create all tables if they don't exist. If reset=True, drop and recreate."""
     # Import models to ensure they're registered with Base
     from app.models.invoice import Invoice, InvoiceLine, OtherDocument
+    from app.models.analysis_job import AnalysisJob
+    from app.models.api_key import ApiKey
     if reset:
         Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
@@ -26,11 +28,15 @@ def init_db(reset: bool = False):
 def clear_db():
     """Clear all data from all tables"""
     from app.models.invoice import Invoice, InvoiceLine, OtherDocument
+    from app.models.analysis_job import AnalysisJob
+    from app.models.api_key import ApiKey
     db = SessionLocal()
     try:
         db.query(InvoiceLine).delete()
         db.query(Invoice).delete()
         db.query(OtherDocument).delete()
+        db.query(AnalysisJob).delete()
+        db.query(ApiKey).delete()
         db.commit()
     finally:
         db.close()
