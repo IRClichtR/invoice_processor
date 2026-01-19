@@ -83,9 +83,60 @@ docker exec invoice_backend alembic history --verbose
 The initial migration has been created and applied. The `alembic_version` table tracks which migrations have been applied.
 
 Current schema includes:
-- `invoices` table with all fields including `original_filename`
-- `invoice_lines` table for line items
-- `other_documents` table for non-invoice documents
+- `invoices` - Invoice records with extracted data
+- `invoice_lines` - Line items for each invoice
+- `other_documents` - Non-invoice documents
+- `analysis_jobs` - Two-step workflow job tracking
+- `api_keys` - Encrypted API key storage
+
+### Analysis Jobs Table
+
+Stores analysis results between the `/analyze` and `/process` steps:
+
+```sql
+CREATE TABLE analysis_jobs (
+    id VARCHAR(36) PRIMARY KEY,           -- UUID
+    status VARCHAR(20) DEFAULT 'analyzed', -- analyzed, processing, completed, expired, failed
+    original_filename VARCHAR(255),
+    file_extension VARCHAR(10),
+    page_count INTEGER DEFAULT 1,
+    confidence_score FLOAT,
+    is_handwritten BOOLEAN DEFAULT FALSE,
+    is_low_quality BOOLEAN DEFAULT FALSE,
+    suggested_pipeline VARCHAR(20),        -- florence, claude
+    quality_classification VARCHAR(30),
+    ocr_full_text TEXT,
+    ocr_words_json JSON,
+    ocr_spatial_grid TEXT,
+    quality_details JSON,
+    preprocessing_report JSON,
+    created_at DATETIME,
+    expires_at DATETIME,                   -- Job expiration (1 hour)
+    completed_at DATETIME,
+    result_invoice_id INTEGER REFERENCES invoices(id),
+    result_document_id INTEGER REFERENCES other_documents(id),
+    processing_method VARCHAR(20),
+    processing_error TEXT
+);
+```
+
+### API Keys Table
+
+Stores encrypted API keys for external services:
+
+```sql
+CREATE TABLE api_keys (
+    id INTEGER PRIMARY KEY,
+    provider VARCHAR(50) UNIQUE,           -- anthropic, openai, etc.
+    encrypted_key TEXT NOT NULL,           -- Fernet encrypted
+    key_prefix VARCHAR(20),                -- For identification (e.g., "sk-ant-...")
+    is_valid BOOLEAN DEFAULT TRUE,
+    validation_error VARCHAR(255),
+    created_at DATETIME,
+    updated_at DATETIME,
+    last_validated_at DATETIME
+);
+```
 
 ## Troubleshooting
 
