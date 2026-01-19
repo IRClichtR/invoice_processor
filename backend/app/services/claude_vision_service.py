@@ -18,7 +18,7 @@ from app.core.config import settings
 logger = structlog.get_logger(__name__)
 
 # Claude API console URL for getting API keys
-CLAUDE_API_CONSOLE_URL = "https://console.anthropic.com/settings/keys"
+CLAUDE_API_CONSOLE_URL = "https://platform.claude.com"
 
 
 class ClaudeVisionError(Exception):
