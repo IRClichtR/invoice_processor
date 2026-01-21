@@ -23,6 +23,7 @@ from app.models.invoice import Invoice, InvoiceLine, OtherDocument
 from app.services.analysis_service import AnalysisService
 from app.services.cleanup_service import CleanupService
 from app.services.api_key_service import ApiKeyService
+from app.services.document_storage_service import document_storage_service
 from app.services.model_manager import get_florence_service
 from app.services.claude_vision_service import (
     ClaudeVisionService,
@@ -153,7 +154,9 @@ class ProcessingService:
                     db,
                     invoice_data,
                     extraction_result.get('raw_response', ''),
-                    job.original_filename
+                    job.original_filename,
+                    job_id=job.id,
+                    file_extension=job.file_extension
                 )
                 result['invoice_id'] = save_result.get('invoice_id')
                 result['document_id'] = save_result.get('document_id')
@@ -171,8 +174,8 @@ class ProcessingService:
             db.commit()
             result['success'] = True
 
-            # Clean up temp files after successful processing
-            self.cleanup_service.cleanup_job_files(job_id)
+            # Note: Don't clean up temp files here - they're needed for review page preview
+            # Files will be cleaned up when user confirms review or when job expires
 
             logger.info(
                 "Job processing complete",
@@ -326,7 +329,9 @@ class ProcessingService:
         db: Session,
         invoice_data: Dict[str, Any],
         raw_response: str,
-        original_filename: str
+        original_filename: str,
+        job_id: str = None,
+        file_extension: str = None
     ) -> Dict[str, Any]:
         """
         Save extracted data to database.
@@ -336,6 +341,8 @@ class ProcessingService:
             invoice_data: Extracted invoice data
             raw_response: Raw VLM response
             original_filename: Original filename
+            job_id: Job ID for retrieving original document
+            file_extension: File extension of original document
 
         Returns:
             {'invoice_id': int} or {'document_id': int}
@@ -372,6 +379,26 @@ class ProcessingService:
 
         db.add(invoice)
         db.flush()
+
+        # Store original document permanently
+        if job_id and file_extension and original_filename:
+            # Strip leading dot from extension (e.g., '.pdf' -> 'pdf')
+            ext = file_extension.lstrip('.')
+            source_path = self.cleanup_service.get_job_file_path(
+                job_id, 'original', extension=ext
+            )
+            stored_filename = document_storage_service.store_document(
+                source_path=source_path,
+                invoice_id=invoice.id,
+                original_filename=original_filename
+            )
+            if stored_filename:
+                invoice.document_path = stored_filename
+                logger.info(
+                    "Document stored permanently",
+                    invoice_id=invoice.id,
+                    document_path=stored_filename
+                )
 
         # Add line items
         for item_data in invoice_data.get('line_items', []):

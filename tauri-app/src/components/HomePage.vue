@@ -84,7 +84,7 @@ function handleFileInput(e: Event) {
             </svg>
             View Invoices
           </button>
-          <button class="btn btn-primary">Get Started</button>
+          <!-- <button class="btn btn-primary">Get Started</button> -->
         </div>
       </div>
     </header>

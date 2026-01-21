@@ -129,7 +129,9 @@ async function startProcessing() {
 
       if (allErrors) {
         status.value = 'error';
-        errorMessage.value = 'All files failed to process';
+        // Get the first error to show as the main message
+        const firstError = processingFiles.value.find(f => f.error)?.error;
+        errorMessage.value = firstError ? getErrorMessage(firstError) : 'All files failed to process';
       } else {
         status.value = 'success';
       }
@@ -167,6 +169,30 @@ function handleRetry() {
     f.result = undefined;
   });
   startProcessing();
+}
+
+function getErrorMessage(error: string): string {
+  // Parse common error messages into user-friendly text
+  const lowerError = error.toLowerCase();
+
+  if (lowerError.includes('same name already exists') || lowerError.includes('file with the same name')) {
+    return 'File already exists in database';
+  }
+  if (lowerError.includes('invalid file type') || lowerError.includes('allowed:')) {
+    return 'Invalid file type';
+  }
+  if (lowerError.includes('file size exceeds') || lowerError.includes('too large')) {
+    return 'File too large';
+  }
+  if (lowerError.includes('api key') || lowerError.includes('anthropic')) {
+    return 'Claude API key not configured';
+  }
+  if (lowerError.includes('network') || lowerError.includes('fetch')) {
+    return 'Network error';
+  }
+
+  // Return original error if no match (truncated if too long)
+  return error.length > 40 ? error.substring(0, 37) + '...' : error;
 }
 </script>
 
@@ -264,8 +290,8 @@ function handleRetry() {
                   </svg>
                 </div>
                 <span class="file-name">{{ file.name }}</span>
-                <span v-if="file.error" class="file-error" :title="file.error">{{ file.error }}</span>
-                <div class="file-progress">
+                <span v-if="file.error" class="file-error-text" :title="file.error">{{ getErrorMessage(file.error) }}</span>
+                <div v-else class="file-progress">
                   <div class="file-progress-bar">
                     <div class="file-progress-fill" :style="{ width: `${file.progress}%` }"></div>
                   </div>
@@ -327,6 +353,28 @@ function handleRetry() {
           <p class="state-description">
             {{ errorMessage || 'An error occurred while processing your documents. Please try again.' }}
           </p>
+
+          <!-- Files with errors -->
+          <div v-if="processingFiles.length > 0" class="files-section error-files">
+            <h3>Failed Files</h3>
+            <div class="files-list">
+              <div
+                v-for="file in processingFiles"
+                :key="file.name"
+                class="file-item file-error"
+              >
+                <div class="file-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <line x1="15" y1="9" x2="9" y2="15"></line>
+                    <line x1="9" y1="9" x2="15" y2="15"></line>
+                  </svg>
+                </div>
+                <span class="file-name">{{ file.name }}</span>
+                <span v-if="file.error" class="file-error-text" :title="file.error">{{ getErrorMessage(file.error) }}</span>
+              </div>
+            </div>
+          </div>
 
           <div class="action-buttons">
             <button class="btn btn-secondary" @click="handleCancel">
@@ -625,6 +673,15 @@ function handleRetry() {
 
 .file-analyzing .file-icon {
   color: #1e40af;
+}
+
+/* Error Files Section */
+.error-files {
+  margin-bottom: var(--spacing-xl);
+}
+
+.error-files h3 {
+  color: #991b1b;
 }
 
 /* Success Stats */

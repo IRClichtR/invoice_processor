@@ -12,10 +12,14 @@ export {
   processJob,
   getJobStatus,
   processFile,
+  getJobImageUrl,
+  cleanupJob,
   // Invoice CRUD
   listInvoices,
   getInvoice,
   deleteInvoice,
+  updateInvoice,
+  getInvoiceDocumentUrl,
   // Other documents
   listOtherDocuments,
   getOtherDocument,

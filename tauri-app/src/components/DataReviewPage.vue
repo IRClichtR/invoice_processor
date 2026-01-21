@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue';
-import type { FileProcessingResult } from '../api';
+import { updateInvoice, getJobImageUrl, cleanupJob, type FileProcessingResult, type InvoiceUpdate, type InvoiceLineUpdate } from '../api';
 
 interface LineItem {
   description: string;
@@ -12,6 +12,7 @@ interface LineItem {
 interface InvoiceData {
   id: string;
   fileName: string;
+  jobId?: string;  // Job ID for accessing preview image
   invoiceNumber: string;
   vendor: string;
   vendorAddress: string;
@@ -68,6 +69,7 @@ function convertResults(results: FileProcessingResult[]): InvoiceData[] {
     return {
       id: String(index + 1),
       fileName: result.filename,
+      jobId: analysis?.job_id,
       invoiceNumber: extracted?.invoice_number || '',
       vendor: extracted?.provider || 'Unknown vendor',
       vendorAddress: '',
@@ -93,6 +95,8 @@ function convertResults(results: FileProcessingResult[]): InvoiceData[] {
 }
 
 const invoices = ref<InvoiceData[]>([]);
+const isSaving = ref(false);
+const saveError = ref<string | null>(null);
 
 // Initialize from props
 watch(() => props.processingResults, (newResults) => {
@@ -113,6 +117,18 @@ const totalAmount = computed(() => {
   return invoices.value
     .filter(inv => inv.selected)
     .reduce((sum, inv) => sum + inv.totalAmount, 0);
+});
+
+const selectedCurrency = computed(() => {
+  const selected = invoices.value.filter(inv => inv.selected);
+  if (selected.length === 0) return 'EUR';
+  const currencies = [...new Set(selected.map(inv => inv.currency))];
+  return currencies.length === 1 ? currencies[0] : 'Mixed';
+});
+
+const selectedImageUrl = computed(() => {
+  if (!selectedInvoice.value?.jobId) return null;
+  return getJobImageUrl(selectedInvoice.value.jobId, 0);
 });
 
 function selectInvoice(id: string) {
@@ -177,18 +193,74 @@ function removeInvoice(id: string) {
   }
 }
 
-function confirmAndSave() {
+async function confirmAndSave() {
   const selectedInvoices = invoices.value.filter(inv => inv.selected);
-  const savedCount = selectedInvoices.filter(inv => inv.invoiceId).length;
-  // Data is already saved during processing, just emit confirm
-  emit('confirm');
+  const invoicesToUpdate = selectedInvoices.filter(inv => inv.invoiceId && !inv.isOtherDocument);
+
+  // Collect all job IDs for cleanup
+  const jobIds = [...new Set(invoices.value.map(inv => inv.jobId).filter(Boolean))] as string[];
+
+  if (invoicesToUpdate.length === 0) {
+    // Clean up temp files even if nothing to update
+    for (const jobId of jobIds) {
+      try {
+        await cleanupJob(jobId);
+      } catch (e) {
+        console.warn('Failed to cleanup job:', jobId, e);
+      }
+    }
+    emit('confirm');
+    return;
+  }
+
+  isSaving.value = true;
+  saveError.value = null;
+
+  try {
+    // Update each invoice with the modified data
+    for (const invoice of invoicesToUpdate) {
+      const updateData: InvoiceUpdate = {
+        provider: invoice.vendor || null,
+        date: invoice.date || null,
+        invoice_number: invoice.invoiceNumber || null,
+        currency: invoice.currency || 'EUR',
+        total_without_vat: invoice.amount,
+        total_with_vat: invoice.totalAmount,
+        lines: invoice.lineItems.map(line => ({
+          id: null, // New lines from review don't have IDs
+          designation: line.description || null,
+          quantity: line.quantity,
+          unit_price: line.unitPrice,
+          total_ht: line.total,
+        }))
+      };
+
+      await updateInvoice(invoice.invoiceId!, updateData);
+    }
+
+    // Clean up temp files after successful save
+    for (const jobId of jobIds) {
+      try {
+        await cleanupJob(jobId);
+      } catch (e) {
+        console.warn('Failed to cleanup job:', jobId, e);
+      }
+    }
+
+    emit('confirm');
+  } catch (error) {
+    console.error('Failed to save invoice updates:', error);
+    saveError.value = error instanceof Error ? error.message : 'Failed to save changes';
+  } finally {
+    isSaving.value = false;
+  }
 }
 
 function getStatusLabel(status: string): string {
   switch (status) {
     case 'valid': return 'Ready';
-    case 'warning': return 'Needs review';
-    case 'error': return 'Missing data';
+    case 'warning': return 'Review needed';
+    case 'error': return 'Incomplete';
     default: return status;
   }
 }
@@ -226,7 +298,7 @@ function getStatusLabel(status: string): string {
               <span class="stat-label">Selected</span>
             </div>
             <div class="stat">
-              <span class="stat-value">{{ totalAmount.toLocaleString('en-US', { minimumFractionDigits: 2 }) }}</span>
+              <span class="stat-value">{{ totalAmount.toLocaleString('en-US', { minimumFractionDigits: 2 }) }} <span class="stat-currency">{{ selectedCurrency }}</span></span>
               <span class="stat-label">Total Amount</span>
             </div>
           </div>
@@ -306,6 +378,11 @@ function getStatusLabel(status: string): string {
               </button>
             </div>
 
+            <!-- Document Preview -->
+            <div v-if="selectedImageUrl" class="document-preview">
+              <img :src="selectedImageUrl" alt="Invoice preview" @error="(e) => (e.target as HTMLImageElement).style.display = 'none'" />
+            </div>
+
             <div class="detail-content">
               <!-- File Info -->
               <div class="detail-section">
@@ -342,9 +419,172 @@ function getStatusLabel(status: string): string {
                   <div class="form-group">
                     <label>Currency</label>
                     <select v-model="selectedInvoice.currency">
-                      <option value="EUR">EUR</option>
-                      <option value="USD">USD</option>
-                      <option value="GBP">GBP</option>
+                      <optgroup label="Major Currencies">
+                        <option value="EUR">EUR - Euro</option>
+                        <option value="USD">USD - US Dollar</option>
+                        <option value="GBP">GBP - British Pound</option>
+                        <option value="CHF">CHF - Swiss Franc</option>
+                        <option value="JPY">JPY - Japanese Yen</option>
+                        <option value="CNY">CNY - Chinese Yuan</option>
+                        <option value="CAD">CAD - Canadian Dollar</option>
+                        <option value="AUD">AUD - Australian Dollar</option>
+                      </optgroup>
+                      <optgroup label="Africa">
+                        <option value="DZD">DZD - Algerian Dinar</option>
+                        <option value="AOA">AOA - Angolan Kwanza</option>
+                        <option value="BWP">BWP - Botswanan Pula</option>
+                        <option value="BIF">BIF - Burundian Franc</option>
+                        <option value="CVE">CVE - Cape Verdean Escudo</option>
+                        <option value="XAF">XAF - Central African CFA Franc</option>
+                        <option value="KMF">KMF - Comorian Franc</option>
+                        <option value="CDF">CDF - Congolese Franc</option>
+                        <option value="DJF">DJF - Djiboutian Franc</option>
+                        <option value="EGP">EGP - Egyptian Pound</option>
+                        <option value="ERN">ERN - Eritrean Nakfa</option>
+                        <option value="SZL">SZL - Eswatini Lilangeni</option>
+                        <option value="ETB">ETB - Ethiopian Birr</option>
+                        <option value="GMD">GMD - Gambian Dalasi</option>
+                        <option value="GHS">GHS - Ghanaian Cedi</option>
+                        <option value="GNF">GNF - Guinean Franc</option>
+                        <option value="KES">KES - Kenyan Shilling</option>
+                        <option value="LSL">LSL - Lesotho Loti</option>
+                        <option value="LRD">LRD - Liberian Dollar</option>
+                        <option value="LYD">LYD - Libyan Dinar</option>
+                        <option value="MGA">MGA - Malagasy Ariary</option>
+                        <option value="MWK">MWK - Malawian Kwacha</option>
+                        <option value="MRU">MRU - Mauritanian Ouguiya</option>
+                        <option value="MUR">MUR - Mauritian Rupee</option>
+                        <option value="MAD">MAD - Moroccan Dirham</option>
+                        <option value="MZN">MZN - Mozambican Metical</option>
+                        <option value="NAD">NAD - Namibian Dollar</option>
+                        <option value="NGN">NGN - Nigerian Naira</option>
+                        <option value="RWF">RWF - Rwandan Franc</option>
+                        <option value="STN">STN - São Tomé Dobra</option>
+                        <option value="SCR">SCR - Seychellois Rupee</option>
+                        <option value="SLE">SLE - Sierra Leonean Leone</option>
+                        <option value="SOS">SOS - Somali Shilling</option>
+                        <option value="ZAR">ZAR - South African Rand</option>
+                        <option value="SSP">SSP - South Sudanese Pound</option>
+                        <option value="SDG">SDG - Sudanese Pound</option>
+                        <option value="TZS">TZS - Tanzanian Shilling</option>
+                        <option value="TND">TND - Tunisian Dinar</option>
+                        <option value="UGX">UGX - Ugandan Shilling</option>
+                        <option value="XOF">XOF - West African CFA Franc</option>
+                        <option value="ZMW">ZMW - Zambian Kwacha</option>
+                        <option value="ZWL">ZWL - Zimbabwean Dollar</option>
+                      </optgroup>
+                      <optgroup label="Asia">
+                        <option value="AFN">AFN - Afghan Afghani</option>
+                        <option value="AMD">AMD - Armenian Dram</option>
+                        <option value="AZN">AZN - Azerbaijani Manat</option>
+                        <option value="BHD">BHD - Bahraini Dinar</option>
+                        <option value="BDT">BDT - Bangladeshi Taka</option>
+                        <option value="BTN">BTN - Bhutanese Ngultrum</option>
+                        <option value="BND">BND - Brunei Dollar</option>
+                        <option value="KHR">KHR - Cambodian Riel</option>
+                        <option value="GEL">GEL - Georgian Lari</option>
+                        <option value="HKD">HKD - Hong Kong Dollar</option>
+                        <option value="INR">INR - Indian Rupee</option>
+                        <option value="IDR">IDR - Indonesian Rupiah</option>
+                        <option value="IRR">IRR - Iranian Rial</option>
+                        <option value="IQD">IQD - Iraqi Dinar</option>
+                        <option value="ILS">ILS - Israeli Shekel</option>
+                        <option value="JOD">JOD - Jordanian Dinar</option>
+                        <option value="KZT">KZT - Kazakhstani Tenge</option>
+                        <option value="KWD">KWD - Kuwaiti Dinar</option>
+                        <option value="KGS">KGS - Kyrgyzstani Som</option>
+                        <option value="LAK">LAK - Lao Kip</option>
+                        <option value="LBP">LBP - Lebanese Pound</option>
+                        <option value="MOP">MOP - Macanese Pataca</option>
+                        <option value="MYR">MYR - Malaysian Ringgit</option>
+                        <option value="MVR">MVR - Maldivian Rufiyaa</option>
+                        <option value="MNT">MNT - Mongolian Tugrik</option>
+                        <option value="MMK">MMK - Myanmar Kyat</option>
+                        <option value="NPR">NPR - Nepalese Rupee</option>
+                        <option value="KPW">KPW - North Korean Won</option>
+                        <option value="OMR">OMR - Omani Rial</option>
+                        <option value="PKR">PKR - Pakistani Rupee</option>
+                        <option value="PHP">PHP - Philippine Peso</option>
+                        <option value="QAR">QAR - Qatari Riyal</option>
+                        <option value="SAR">SAR - Saudi Riyal</option>
+                        <option value="SGD">SGD - Singapore Dollar</option>
+                        <option value="KRW">KRW - South Korean Won</option>
+                        <option value="LKR">LKR - Sri Lankan Rupee</option>
+                        <option value="SYP">SYP - Syrian Pound</option>
+                        <option value="TWD">TWD - Taiwan Dollar</option>
+                        <option value="TJS">TJS - Tajikistani Somoni</option>
+                        <option value="THB">THB - Thai Baht</option>
+                        <option value="TRY">TRY - Turkish Lira</option>
+                        <option value="TMT">TMT - Turkmenistani Manat</option>
+                        <option value="AED">AED - UAE Dirham</option>
+                        <option value="UZS">UZS - Uzbekistani Som</option>
+                        <option value="VND">VND - Vietnamese Dong</option>
+                        <option value="YER">YER - Yemeni Rial</option>
+                      </optgroup>
+                      <optgroup label="Americas">
+                        <option value="ARS">ARS - Argentine Peso</option>
+                        <option value="AWG">AWG - Aruban Florin</option>
+                        <option value="BSD">BSD - Bahamian Dollar</option>
+                        <option value="BBD">BBD - Barbadian Dollar</option>
+                        <option value="BZD">BZD - Belize Dollar</option>
+                        <option value="BMD">BMD - Bermudian Dollar</option>
+                        <option value="BOB">BOB - Bolivian Boliviano</option>
+                        <option value="BRL">BRL - Brazilian Real</option>
+                        <option value="KYD">KYD - Cayman Islands Dollar</option>
+                        <option value="CLP">CLP - Chilean Peso</option>
+                        <option value="COP">COP - Colombian Peso</option>
+                        <option value="CRC">CRC - Costa Rican Colón</option>
+                        <option value="CUP">CUP - Cuban Peso</option>
+                        <option value="DOP">DOP - Dominican Peso</option>
+                        <option value="XCD">XCD - East Caribbean Dollar</option>
+                        <option value="SVC">SVC - Salvadoran Colón</option>
+                        <option value="FKP">FKP - Falkland Islands Pound</option>
+                        <option value="GTQ">GTQ - Guatemalan Quetzal</option>
+                        <option value="GYD">GYD - Guyanese Dollar</option>
+                        <option value="HTG">HTG - Haitian Gourde</option>
+                        <option value="HNL">HNL - Honduran Lempira</option>
+                        <option value="JMD">JMD - Jamaican Dollar</option>
+                        <option value="MXN">MXN - Mexican Peso</option>
+                        <option value="ANG">ANG - Netherlands Antillean Guilder</option>
+                        <option value="NIO">NIO - Nicaraguan Córdoba</option>
+                        <option value="PAB">PAB - Panamanian Balboa</option>
+                        <option value="PYG">PYG - Paraguayan Guaraní</option>
+                        <option value="PEN">PEN - Peruvian Sol</option>
+                        <option value="SRD">SRD - Surinamese Dollar</option>
+                        <option value="TTD">TTD - Trinidad Dollar</option>
+                        <option value="UYU">UYU - Uruguayan Peso</option>
+                        <option value="VES">VES - Venezuelan Bolívar</option>
+                      </optgroup>
+                      <optgroup label="Europe">
+                        <option value="ALL">ALL - Albanian Lek</option>
+                        <option value="BYN">BYN - Belarusian Ruble</option>
+                        <option value="BAM">BAM - Bosnia-Herzegovina Mark</option>
+                        <option value="BGN">BGN - Bulgarian Lev</option>
+                        <option value="HRK">HRK - Croatian Kuna</option>
+                        <option value="CZK">CZK - Czech Koruna</option>
+                        <option value="DKK">DKK - Danish Krone</option>
+                        <option value="HUF">HUF - Hungarian Forint</option>
+                        <option value="ISK">ISK - Icelandic Króna</option>
+                        <option value="MDL">MDL - Moldovan Leu</option>
+                        <option value="MKD">MKD - Macedonian Denar</option>
+                        <option value="NOK">NOK - Norwegian Krone</option>
+                        <option value="PLN">PLN - Polish Zloty</option>
+                        <option value="RON">RON - Romanian Leu</option>
+                        <option value="RUB">RUB - Russian Ruble</option>
+                        <option value="RSD">RSD - Serbian Dinar</option>
+                        <option value="SEK">SEK - Swedish Krona</option>
+                        <option value="UAH">UAH - Ukrainian Hryvnia</option>
+                      </optgroup>
+                      <optgroup label="Oceania">
+                        <option value="FJD">FJD - Fijian Dollar</option>
+                        <option value="NZD">NZD - New Zealand Dollar</option>
+                        <option value="PGK">PGK - Papua New Guinean Kina</option>
+                        <option value="WST">WST - Samoan Tala</option>
+                        <option value="SBD">SBD - Solomon Islands Dollar</option>
+                        <option value="TOP">TOP - Tongan Pa'anga</option>
+                        <option value="VUV">VUV - Vanuatu Vatu</option>
+                        <option value="XPF">XPF - CFP Franc</option>
+                      </optgroup>
                     </select>
                   </div>
                   <div class="form-group">
@@ -537,17 +777,28 @@ function getStatusLabel(status: string): string {
           </div>
         </div>
 
+        <!-- Save Error -->
+        <div v-if="saveError" class="save-error">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="15" y1="9" x2="9" y2="15"></line>
+            <line x1="9" y1="9" x2="15" y2="15"></line>
+          </svg>
+          {{ saveError }}
+        </div>
+
         <!-- Action Buttons -->
         <div class="action-bar">
-          <button class="btn btn-secondary" @click="emit('back')">
+          <button class="btn btn-secondary" @click="emit('back')" :disabled="isSaving">
             Cancel
           </button>
           <button
             class="btn btn-primary"
             @click="confirmAndSave"
-            :disabled="selectedCount === 0"
+            :disabled="selectedCount === 0 || isSaving"
           >
-            Add {{ selectedCount }} Invoice(s) to Database
+            <span v-if="isSaving">Saving...</span>
+            <span v-else>Save {{ selectedCount }} Invoice(s) to Database</span>
           </button>
         </div>
       </div>
@@ -612,6 +863,12 @@ function getStatusLabel(status: string): string {
   color: var(--color-gray-500);
   text-transform: uppercase;
   letter-spacing: 0.05em;
+}
+
+.stat-currency {
+  font-size: 0.75rem;
+  font-weight: var(--font-weight-medium);
+  color: var(--color-gray-500);
 }
 
 /* Split View */
@@ -749,6 +1006,24 @@ function getStatusLabel(status: string): string {
 .detail-header h2 {
   font-size: 1rem;
   margin: 0;
+}
+
+/* Document Preview */
+.document-preview {
+  flex-shrink: 0;
+  max-height: 250px;
+  overflow: hidden;
+  background-color: var(--color-gray-200);
+  border-bottom: 1px solid var(--color-gray-200);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.document-preview img {
+  max-width: 100%;
+  max-height: 250px;
+  object-fit: contain;
 }
 
 .detail-content {
@@ -959,6 +1234,19 @@ function getStatusLabel(status: string): string {
 .btn-icon-small {
   width: 24px;
   height: 24px;
+}
+
+/* Save error */
+.save-error {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-sm) var(--spacing-md);
+  background-color: #fee2e2;
+  color: #991b1b;
+  border-radius: var(--border-radius);
+  margin-bottom: var(--spacing-md);
+  font-size: 0.875rem;
 }
 
 /* Action bar */
