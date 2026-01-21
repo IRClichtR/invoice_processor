@@ -16,6 +16,7 @@ class Invoice(Base):
     currency = Column(String(3), nullable=False, default='XXX')  # ISO 4217 currency code
     confidence_score = Column(Float, nullable=True)
     original_filename = Column(String(255), nullable=True, index=True)
+    document_path = Column(String(500), nullable=True)  # Path to permanently stored document
     raw_vlm_json = Column(JSON, nullable=True)
     raw_vlm_response = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

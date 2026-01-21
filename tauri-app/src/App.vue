@@ -4,19 +4,21 @@ import HomePage from "./components/HomePage.vue";
 import FutureImplementation from "./components/FutureImplementation.vue";
 import DataReviewPage from "./components/DataReviewPage.vue";
 import InvoicesListPage from "./components/InvoicesListPage.vue";
+import InvoiceDetailPage from "./components/InvoiceDetailPage.vue";
 import LoadingPage from "./components/LoadingPage.vue";
 import type { FileProcessingResult, ProcessResponse, AnalyzeResponse } from "./api";
 
-const currentPage = ref<'home' | 'csv' | 'interrogate' | 'review' | 'invoices' | 'loading'>('home');
+const currentPage = ref<'home' | 'csv' | 'interrogate' | 'review' | 'invoices' | 'invoice-detail' | 'loading'>('home');
 const droppedFiles = ref<File[]>([]);
 const processingResults = ref<FileProcessingResult[]>([]);
+const selectedInvoiceId = ref<number | null>(null);
 const featureNames: Record<string, string> = {
   csv: 'Export to CSV',
   interrogate: 'Interrogate Your Data'
 };
 
 function navigate(page: string) {
-  currentPage.value = page as 'home' | 'csv' | 'interrogate' | 'review' | 'invoices' | 'loading';
+  currentPage.value = page as 'home' | 'csv' | 'interrogate' | 'review' | 'invoices' | 'invoice-detail' | 'loading';
 }
 
 function goHome() {
@@ -54,8 +56,13 @@ function handleDataConfirmed() {
 }
 
 function handleViewInvoice(id: number) {
-  // In real implementation, this would open invoice detail view
-  console.log('View invoice:', id);
+  selectedInvoiceId.value = id;
+  currentPage.value = 'invoice-detail';
+}
+
+function handleInvoiceDetailBack() {
+  selectedInvoiceId.value = null;
+  currentPage.value = 'invoices';
 }
 </script>
 
@@ -82,6 +89,12 @@ function handleViewInvoice(id: number) {
     v-else-if="currentPage === 'invoices'"
     @back="goHome"
     @view-invoice="handleViewInvoice"
+  />
+  <InvoiceDetailPage
+    v-else-if="currentPage === 'invoice-detail' && selectedInvoiceId"
+    :invoice-id="selectedInvoiceId"
+    @back="handleInvoiceDetailBack"
+    @saved="handleInvoiceDetailBack"
   />
   <FutureImplementation
     v-else
