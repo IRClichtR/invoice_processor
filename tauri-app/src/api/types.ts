@@ -25,9 +25,34 @@ export interface InvoiceResponse {
   total_with_vat: number | null;
   currency: string;
   original_filename: string | null;
+  document_path: string | null;
+  has_document: boolean;
   created_at: string | null;
   updated_at: string | null;
   lines: InvoiceLineResponse[];
+}
+
+// ============================================================================
+// Invoice Update Types
+// ============================================================================
+
+export interface InvoiceLineUpdate {
+  id?: number | null;
+  designation: string | null;
+  quantity: number | null;
+  unit_price: number | null;
+  total_ht: number | null;
+  _delete?: boolean;
+}
+
+export interface InvoiceUpdate {
+  provider?: string | null;
+  date?: string | null;
+  invoice_number?: string | null;
+  total_without_vat?: number | null;
+  total_with_vat?: number | null;
+  currency?: string | null;
+  lines?: InvoiceLineUpdate[] | null;
 }
 
 export interface OtherDocumentResponse {

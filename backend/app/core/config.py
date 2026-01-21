@@ -78,6 +78,9 @@ class Settings:
     # Job expiration time in seconds (default: 1 hour)
     JOB_EXPIRATION_SECONDS: int = int(os.getenv("JOB_EXPIRATION_SECONDS", "3600"))
 
+    # Permanent document storage directory
+    DOCUMENTS_DIR: str = os.getenv("DOCUMENTS_DIR", "documents")
+
     # Encryption key for API keys (auto-generated if not set)
     API_KEY_ENCRYPTION_KEY: str = _get_or_create_encryption_key()
 

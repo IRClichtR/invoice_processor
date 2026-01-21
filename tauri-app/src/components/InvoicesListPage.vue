@@ -128,7 +128,18 @@ const stats = computed(() => {
   const totalAmount = invoices.value.reduce((sum, inv) => sum + inv.totalAmount, 0);
   const totalHT = invoices.value.reduce((sum, inv) => sum + inv.amount, 0);
 
-  return { total, totalAmount, totalHT };
+  // Determine currency for display (use most common, or "Mixed" if multiple)
+  const currencies = [...new Set(invoices.value.map(inv => inv.currency))];
+  const currency = currencies.length === 1 ? currencies[0] : (currencies.length > 1 ? 'Mixed' : 'EUR');
+
+  return { total, totalAmount, totalHT, currency };
+});
+
+const selectedCurrency = computed(() => {
+  const selected = invoices.value.filter(inv => inv.selected);
+  if (selected.length === 0) return 'EUR';
+  const currencies = [...new Set(selected.map(inv => inv.currency))];
+  return currencies.length === 1 ? currencies[0] : 'Mixed';
 });
 
 function toggleSelectAll() {
@@ -276,7 +287,7 @@ function exportToCsv() {
               </svg>
             </div>
             <div class="stat-info">
-              <span class="stat-value">{{ stats.totalHT.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) }}</span>
+              <span class="stat-value">{{ stats.totalHT.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) }} <span class="stat-currency">{{ stats.currency }}</span></span>
               <span class="stat-label">Total (excl. VAT)</span>
             </div>
           </div>
@@ -288,7 +299,7 @@ function exportToCsv() {
               </svg>
             </div>
             <div class="stat-info">
-              <span class="stat-value">{{ stats.totalAmount.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) }}</span>
+              <span class="stat-value">{{ stats.totalAmount.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) }} <span class="stat-currency">{{ stats.currency }}</span></span>
               <span class="stat-label">Total (incl. VAT)</span>
             </div>
           </div>
@@ -325,7 +336,7 @@ function exportToCsv() {
             <div class="selection-info">
               <span class="selection-count">{{ selectedCount }} invoice(s) selected</span>
               <span class="selection-total">
-                Total: {{ selectedTotal.toLocaleString('en-US', { minimumFractionDigits: 2 }) }} EUR
+                Total: {{ selectedTotal.toLocaleString('en-US', { minimumFractionDigits: 2 }) }} {{ selectedCurrency }}
               </span>
             </div>
             <div class="selection-actions">
@@ -560,6 +571,12 @@ function exportToCsv() {
 
 .stat-label {
   font-size: 0.75rem;
+  color: var(--color-gray-500);
+}
+
+.stat-currency {
+  font-size: 0.75rem;
+  font-weight: var(--font-weight-medium);
   color: var(--color-gray-500);
 }
 

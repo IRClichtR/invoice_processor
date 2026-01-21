@@ -3,13 +3,14 @@
  * Two-step workflow: Analyze -> Process
  */
 
-import { apiGet, apiPost, apiPostForm, apiDelete } from './client';
+import { apiGet, apiPost, apiPostForm, apiDelete, apiPut, buildUrl } from './client';
 import type {
   AnalyzeResponse,
   ProcessRequest,
   ProcessResponse,
   JobStatusResponse,
   InvoiceResponse,
+  InvoiceUpdate,
   OtherDocumentResponse,
   CleanupResponse,
   TempDirStatsResponse,
@@ -83,6 +84,37 @@ export async function getInvoice(id: number): Promise<InvoiceResponse> {
  */
 export async function deleteInvoice(id: number): Promise<void> {
   await apiDelete(`/invoices/${id}`);
+}
+
+/**
+ * Update an invoice
+ */
+export async function updateInvoice(
+  id: number,
+  data: InvoiceUpdate
+): Promise<InvoiceResponse> {
+  return apiPut<InvoiceResponse>(`/invoices/${id}`, data);
+}
+
+/**
+ * Get the URL for an invoice's original document
+ */
+export function getInvoiceDocumentUrl(id: number): string {
+  return buildUrl(`/invoices/${id}/document`);
+}
+
+/**
+ * Get the URL for a job's page image (used during review)
+ */
+export function getJobImageUrl(jobId: string, page: number = 0): string {
+  return buildUrl(`/jobs/${jobId}/image?page=${page}`);
+}
+
+/**
+ * Clean up temp files for a job after review is complete
+ */
+export async function cleanupJob(jobId: string): Promise<void> {
+  await apiDelete(`/jobs/${jobId}`);
 }
 
 // ============================================================================
