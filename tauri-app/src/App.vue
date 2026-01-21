@@ -1,14 +1,15 @@
 <script setup lang="ts">
 import { ref } from "vue";
-import { invoke } from "@tauri-apps/api/core";
 import HomePage from "./components/HomePage.vue";
 import FutureImplementation from "./components/FutureImplementation.vue";
 import DataReviewPage from "./components/DataReviewPage.vue";
 import InvoicesListPage from "./components/InvoicesListPage.vue";
 import LoadingPage from "./components/LoadingPage.vue";
+import type { FileProcessingResult, ProcessResponse, AnalyzeResponse } from "./api";
 
 const currentPage = ref<'home' | 'csv' | 'interrogate' | 'review' | 'invoices' | 'loading'>('home');
 const droppedFiles = ref<File[]>([]);
+const processingResults = ref<FileProcessingResult[]>([]);
 const featureNames: Record<string, string> = {
   csv: 'Export to CSV',
   interrogate: 'Interrogate Your Data'
@@ -19,19 +20,23 @@ function navigate(page: string) {
 }
 
 function goHome() {
+  droppedFiles.value = [];
+  processingResults.value = [];
   currentPage.value = 'home';
 }
 
 function handleFilesDropped(files: File[]) {
   // Store files and navigate to loading page
   droppedFiles.value = files;
-  console.log('Files dropped:', files);
+  processingResults.value = [];
+  console.log('Files dropped:', files.map(f => f.name));
   currentPage.value = 'loading';
 }
 
-function handleProcessingComplete(results: any[]) {
-  // Navigate to review page after processing
+function handleProcessingComplete(results: FileProcessingResult[]) {
+  // Store results and navigate to review page
   console.log('Processing complete:', results);
+  processingResults.value = results;
   currentPage.value = 'review';
 }
 
@@ -40,13 +45,15 @@ function handleProcessingError(message: string) {
   // Stay on loading page to show error state
 }
 
-function handleDataConfirmed(data: any[]) {
-  // In real implementation, this would save to database
-  console.log('Data confirmed:', data);
-  currentPage.value = 'invoices'; // Navigate to invoices list after saving
+function handleDataConfirmed() {
+  // Data is already saved during processing, just navigate to list
+  console.log('Data confirmed, navigating to invoices list');
+  droppedFiles.value = [];
+  processingResults.value = [];
+  currentPage.value = 'invoices';
 }
 
-function handleViewInvoice(id: string) {
+function handleViewInvoice(id: number) {
   // In real implementation, this would open invoice detail view
   console.log('View invoice:', id);
 }
@@ -67,6 +74,7 @@ function handleViewInvoice(id: string) {
   />
   <DataReviewPage
     v-else-if="currentPage === 'review'"
+    :processing-results="processingResults"
     @back="goHome"
     @confirm="handleDataConfirmed"
   />

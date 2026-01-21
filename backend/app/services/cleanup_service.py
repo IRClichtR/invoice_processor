@@ -233,14 +233,6 @@ class CleanupService:
 
     def cleanup_completed_job(self, job_id: str, db: Session) -> Dict[str, Any]:
         """
-        Clean up files for a completed job.
-
-        Called after successful processing to free disk space.
-
-        Args:
-            job_id: Job UUID
-            db: Database session (not used but kept for consistency)
-
         Returns:
             Cleanup result dict
         """
