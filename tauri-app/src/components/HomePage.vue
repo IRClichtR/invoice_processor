@@ -11,11 +11,14 @@ const fileInputRef = ref<HTMLInputElement | null>(null);
 
 const acceptedTypes = [
   'application/pdf',
-  'application/zip',
-  'application/x-zip-compressed'
+  'image/jpeg',
+  'image/png',
+  'image/bmp',
+  'image/tiff',
+  'image/webp',
 ];
 
-const acceptedExtensions = ['.pdf', '.zip'];
+const acceptedExtensions = ['.pdf', '.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.webp'];
 
 function isValidFile(file: File): boolean {
   const extension = '.' + file.name.split('.').pop()?.toLowerCase();
@@ -106,7 +109,7 @@ function handleFileInput(e: Event) {
           <input
             ref="fileInputRef"
             type="file"
-            accept=".pdf,.zip"
+            accept=".pdf,.jpg,.jpeg,.png,.bmp,.tiff,.tif,.webp"
             multiple
             hidden
             @change="handleFileInput"
@@ -122,7 +125,7 @@ function handleFileInput(e: Event) {
             <span class="dropzone-highlight">Drop your files here</span>
             or click to browse
           </p>
-          <p class="dropzone-hint">PDF and ZIP files accepted</p>
+          <p class="dropzone-hint">PDF and images accepted (JPG, PNG, TIFF, WEBP)</p>
         </div>
       </div>
     </section>

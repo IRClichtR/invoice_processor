@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
+import type { FileProcessingResult } from '../api';
 
 interface LineItem {
   description: string;
@@ -29,137 +30,76 @@ interface InvoiceData {
   lineItems: LineItem[];
   status: 'valid' | 'warning' | 'error';
   selected: boolean;
+  invoiceId?: number;  // ID from backend if saved
+  isOtherDocument?: boolean;
 }
+
+const props = defineProps<{
+  processingResults?: FileProcessingResult[];
+}>();
 
 const emit = defineEmits<{
   (e: 'back'): void;
-  (e: 'confirm', data: InvoiceData[]): void;
+  (e: 'confirm'): void;
 }>();
 
-// Mock data simulating extracted invoice data
-const invoices = ref<InvoiceData[]>([
-  {
-    id: '1',
-    fileName: 'invoice_2024_001.pdf',
-    invoiceNumber: 'INV-2024-001',
-    vendor: 'Acme Corporation',
-    vendorAddress: '123 Business Street, Paris 75001',
-    vendorEmail: 'billing@acme.com',
-    vendorPhone: '+33 1 23 45 67 89',
-    clientName: 'My Company SAS',
-    clientAddress: '456 Client Avenue, Lyon 69001',
-    date: '2024-01-15',
-    dueDate: '2024-02-15',
-    amount: 1041.67,
-    taxAmount: 208.33,
-    totalAmount: 1250.00,
-    currency: 'EUR',
-    paymentTerms: 'Net 30',
-    notes: 'Thank you for your business',
-    lineItems: [
-      { description: 'Consulting Services - January', quantity: 10, unitPrice: 100.00, total: 1000.00 },
-      { description: 'Travel Expenses', quantity: 1, unitPrice: 41.67, total: 41.67 }
-    ],
-    status: 'valid',
-    selected: true
-  },
-  {
-    id: '2',
-    fileName: 'invoice_2024_002.pdf',
-    invoiceNumber: 'INV-2024-002',
-    vendor: 'Tech Solutions Ltd',
-    vendorAddress: '789 Tech Park, London EC1A 1BB',
-    vendorEmail: 'accounts@techsolutions.co.uk',
-    vendorPhone: '+44 20 1234 5678',
-    clientName: 'My Company SAS',
-    clientAddress: '456 Client Avenue, Lyon 69001',
-    date: '2024-01-18',
-    dueDate: '2024-02-18',
-    amount: 2850.42,
-    taxAmount: 570.08,
-    totalAmount: 3420.50,
-    currency: 'EUR',
-    paymentTerms: 'Net 30',
-    notes: '',
-    lineItems: [
-      { description: 'Software License - Annual', quantity: 5, unitPrice: 500.00, total: 2500.00 },
-      { description: 'Support Package', quantity: 1, unitPrice: 350.42, total: 350.42 }
-    ],
-    status: 'valid',
-    selected: true
-  },
-  {
-    id: '3',
-    fileName: 'facture_janvier.pdf',
-    invoiceNumber: 'FAC-2024-0032',
-    vendor: 'Office Supplies Inc',
-    vendorAddress: '15 Rue du Commerce, Paris 75015',
-    vendorEmail: '',
-    vendorPhone: '',
-    clientName: 'My Company SAS',
-    clientAddress: '456 Client Avenue, Lyon 69001',
-    date: '2024-01-20',
-    dueDate: '2024-02-20',
-    amount: 74.99,
-    taxAmount: 15.00,
-    totalAmount: 89.99,
-    currency: 'EUR',
-    paymentTerms: 'Due on receipt',
-    notes: '',
-    lineItems: [
-      { description: 'Office Supplies Bundle', quantity: 1, unitPrice: 74.99, total: 74.99 }
-    ],
-    status: 'warning',
-    selected: true
-  },
-  {
-    id: '4',
-    fileName: 'scan_receipt.pdf',
-    invoiceNumber: '',
-    vendor: 'Unknown Vendor',
-    vendorAddress: '',
-    vendorEmail: '',
-    vendorPhone: '',
-    clientName: '',
-    clientAddress: '',
-    date: '2024-01-22',
-    dueDate: '',
-    amount: 0,
-    taxAmount: 0,
-    totalAmount: 0,
-    currency: 'EUR',
-    paymentTerms: '',
-    notes: 'Low quality scan - manual review required',
-    lineItems: [],
-    status: 'error',
-    selected: false
-  },
-  {
-    id: '5',
-    fileName: 'invoice_cloud_services.pdf',
-    invoiceNumber: 'CS-2024-1847',
-    vendor: 'CloudHost Pro',
-    vendorAddress: '100 Cloud Way, Dublin D02 X285',
-    vendorEmail: 'invoices@cloudhost.pro',
-    vendorPhone: '+353 1 234 5678',
-    clientName: 'My Company SAS',
-    clientAddress: '456 Client Avenue, Lyon 69001',
-    date: '2024-01-25',
-    dueDate: '2024-02-25',
-    amount: 499.17,
-    taxAmount: 99.83,
-    totalAmount: 599.00,
-    currency: 'USD',
-    paymentTerms: 'Net 30',
-    notes: 'Monthly hosting subscription',
-    lineItems: [
-      { description: 'Cloud Hosting - Pro Plan', quantity: 1, unitPrice: 399.00, total: 399.00 },
-      { description: 'CDN Bandwidth Overage', quantity: 100, unitPrice: 1.00, total: 100.17 }
-    ],
-    status: 'valid',
-    selected: true
+// Convert API results to page format
+function convertResults(results: FileProcessingResult[]): InvoiceData[] {
+  return results.map((result, index) => {
+    const extracted = result.processing?.extracted_data;
+    const analysis = result.analysis;
+
+    // Determine status
+    let status: 'valid' | 'warning' | 'error' = 'valid';
+    if (!result.success || result.error) {
+      status = 'error';
+    } else if (!extracted?.provider || !extracted?.total_ttc) {
+      status = 'warning';
+    }
+
+    // Map line items
+    const lineItems: LineItem[] = (extracted?.line_items || []).map(item => ({
+      description: item.designation || '',
+      quantity: item.quantity || 1,
+      unitPrice: item.unit_price || 0,
+      total: item.total_ht || 0,
+    }));
+
+    return {
+      id: String(index + 1),
+      fileName: result.filename,
+      invoiceNumber: extracted?.invoice_number || '',
+      vendor: extracted?.provider || 'Unknown vendor',
+      vendorAddress: '',
+      vendorEmail: '',
+      vendorPhone: '',
+      clientName: '',
+      clientAddress: '',
+      date: extracted?.date || '',
+      dueDate: '',
+      amount: extracted?.total_ht || 0,
+      taxAmount: extracted?.vat_amount || 0,
+      totalAmount: extracted?.total_ttc || 0,
+      currency: extracted?.currency || 'EUR',
+      paymentTerms: '',
+      notes: result.error || (analysis?.is_handwritten ? 'Handwritten document detected' : ''),
+      lineItems,
+      status,
+      selected: result.success && extracted?.is_invoice !== false,
+      invoiceId: result.processing?.invoice_id || undefined,
+      isOtherDocument: extracted?.is_invoice === false,
+    };
+  });
+}
+
+const invoices = ref<InvoiceData[]>([]);
+
+// Initialize from props
+watch(() => props.processingResults, (newResults) => {
+  if (newResults && newResults.length > 0) {
+    invoices.value = convertResults(newResults);
   }
-]);
+}, { immediate: true });
 
 const selectedInvoiceId = ref<string | null>(null);
 
@@ -239,14 +179,15 @@ function removeInvoice(id: string) {
 
 function confirmAndSave() {
   const selectedInvoices = invoices.value.filter(inv => inv.selected);
-  emit('confirm', selectedInvoices);
-  alert(`${selectedInvoices.length} invoice(s) will be added to the database.`);
+  const savedCount = selectedInvoices.filter(inv => inv.invoiceId).length;
+  // Data is already saved during processing, just emit confirm
+  emit('confirm');
 }
 
 function getStatusLabel(status: string): string {
   switch (status) {
     case 'valid': return 'Ready';
-    case 'warning': return 'Review';
+    case 'warning': return 'Needs review';
     case 'error': return 'Missing data';
     default: return status;
   }
@@ -285,7 +226,7 @@ function getStatusLabel(status: string): string {
               <span class="stat-label">Selected</span>
             </div>
             <div class="stat">
-              <span class="stat-value">{{ totalAmount.toLocaleString('fr-FR', { minimumFractionDigits: 2 }) }}</span>
+              <span class="stat-value">{{ totalAmount.toLocaleString('en-US', { minimumFractionDigits: 2 }) }}</span>
               <span class="stat-label">Total Amount</span>
             </div>
           </div>
@@ -337,7 +278,7 @@ function getStatusLabel(status: string): string {
                     </td>
                     <td class="col-vendor">{{ invoice.vendor }}</td>
                     <td class="col-amount">
-                      {{ invoice.totalAmount.toLocaleString('fr-FR', { minimumFractionDigits: 2 }) }} {{ invoice.currency }}
+                      {{ invoice.totalAmount.toLocaleString('en-US', { minimumFractionDigits: 2 }) }} {{ invoice.currency }}
                     </td>
                     <td class="col-actions" @click.stop>
                       <button class="btn-icon btn-icon-danger" @click="removeInvoice(invoice.id)" title="Remove">
@@ -527,7 +468,7 @@ function getStatusLabel(status: string): string {
                           />
                         </td>
                         <td class="cell-total">
-                          {{ item.total.toLocaleString('fr-FR', { minimumFractionDigits: 2 }) }}
+                          {{ item.total.toLocaleString('en-US', { minimumFractionDigits: 2 }) }}
                         </td>
                         <td>
                           <button class="btn-icon btn-icon-small" @click="removeLineItem(index)" title="Remove">
