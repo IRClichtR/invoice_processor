@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, onMounted } from 'vue';
+import { listInvoices, deleteInvoice as apiDeleteInvoice, type InvoiceResponse, ApiException } from '../api';
 
 interface InvoiceRecord {
-  id: string;
+  id: number;
   invoiceNumber: string;
   vendor: string;
   clientName: string;
@@ -12,142 +13,69 @@ interface InvoiceRecord {
   taxAmount: number;
   totalAmount: number;
   currency: string;
-  status: 'paid' | 'pending' | 'overdue';
+  status: 'imported';
   importedAt: string;
   selected: boolean;
 }
 
 const emit = defineEmits<{
   (e: 'back'): void;
-  (e: 'view-invoice', id: string): void;
+  (e: 'view-invoice', id: number): void;
 }>();
 
-// Mock data simulating invoices stored in database
-const invoices = ref<InvoiceRecord[]>([
-  {
-    id: '1',
-    invoiceNumber: 'INV-2024-001',
-    vendor: 'Acme Corporation',
-    clientName: 'My Company SAS',
-    date: '2024-01-15',
-    dueDate: '2024-02-15',
-    amount: 1041.67,
-    taxAmount: 208.33,
-    totalAmount: 1250.00,
-    currency: 'EUR',
-    status: 'paid',
-    importedAt: '2024-01-16T10:30:00',
-    selected: false
-  },
-  {
-    id: '2',
-    invoiceNumber: 'INV-2024-002',
-    vendor: 'Tech Solutions Ltd',
-    clientName: 'My Company SAS',
-    date: '2024-01-18',
-    dueDate: '2024-02-18',
-    amount: 2850.42,
-    taxAmount: 570.08,
-    totalAmount: 3420.50,
-    currency: 'EUR',
-    status: 'paid',
-    importedAt: '2024-01-19T14:22:00',
-    selected: false
-  },
-  {
-    id: '3',
-    invoiceNumber: 'FAC-2024-0032',
-    vendor: 'Office Supplies Inc',
-    clientName: 'My Company SAS',
-    date: '2024-01-20',
-    dueDate: '2024-02-20',
-    amount: 74.99,
-    taxAmount: 15.00,
-    totalAmount: 89.99,
-    currency: 'EUR',
-    status: 'pending',
-    importedAt: '2024-01-21T09:15:00',
-    selected: false
-  },
-  {
-    id: '4',
-    invoiceNumber: 'CS-2024-1847',
-    vendor: 'CloudHost Pro',
-    clientName: 'My Company SAS',
-    date: '2024-01-25',
-    dueDate: '2024-02-25',
-    amount: 499.17,
-    taxAmount: 99.83,
-    totalAmount: 599.00,
-    currency: 'USD',
-    status: 'pending',
-    importedAt: '2024-01-26T11:45:00',
-    selected: false
-  },
-  {
-    id: '5',
-    invoiceNumber: 'INV-2023-0892',
-    vendor: 'Marketing Agency Pro',
-    clientName: 'My Company SAS',
-    date: '2023-12-01',
-    dueDate: '2023-12-31',
-    amount: 4166.67,
-    taxAmount: 833.33,
-    totalAmount: 5000.00,
-    currency: 'EUR',
-    status: 'overdue',
-    importedAt: '2023-12-05T16:30:00',
-    selected: false
-  },
-  {
-    id: '6',
-    invoiceNumber: 'INV-2024-003',
-    vendor: 'Legal Services LLP',
-    clientName: 'My Company SAS',
-    date: '2024-02-01',
-    dueDate: '2024-03-01',
-    amount: 1875.00,
-    taxAmount: 375.00,
-    totalAmount: 2250.00,
-    currency: 'EUR',
-    status: 'pending',
-    importedAt: '2024-02-02T08:00:00',
-    selected: false
-  },
-  {
-    id: '7',
-    invoiceNumber: 'FAC-2024-0048',
-    vendor: 'Office Supplies Inc',
-    clientName: 'My Company SAS',
-    date: '2024-02-10',
-    dueDate: '2024-03-10',
-    amount: 156.25,
-    taxAmount: 31.25,
-    totalAmount: 187.50,
-    currency: 'EUR',
-    status: 'pending',
-    importedAt: '2024-02-11T10:20:00',
-    selected: false
-  },
-  {
-    id: '8',
-    invoiceNumber: 'INV-2024-004',
-    vendor: 'Acme Corporation',
-    clientName: 'My Company SAS',
-    date: '2024-02-15',
-    dueDate: '2024-03-15',
-    amount: 2083.33,
-    taxAmount: 416.67,
-    totalAmount: 2500.00,
-    currency: 'EUR',
-    status: 'pending',
-    importedAt: '2024-02-16T13:45:00',
-    selected: false
+const invoices = ref<InvoiceRecord[]>([]);
+const isLoading = ref(true);
+const loadError = ref<string | null>(null);
+const isDeleting = ref(false);
+
+// Convert API response to page format
+function convertInvoice(inv: InvoiceResponse): InvoiceRecord {
+  // Calculate tax amount from totals
+  const totalHT = inv.total_without_vat || 0;
+  const totalTTC = inv.total_with_vat || 0;
+  const taxAmount = totalTTC - totalHT;
+
+  return {
+    id: inv.id,
+    invoiceNumber: inv.invoice_number || `#${inv.id}`,
+    vendor: inv.provider || 'Unknown vendor',
+    clientName: '',
+    date: inv.date || '',
+    dueDate: '',
+    amount: totalHT,
+    taxAmount: taxAmount > 0 ? taxAmount : 0,
+    totalAmount: totalTTC,
+    currency: inv.currency || 'EUR',
+    status: 'imported',
+    importedAt: inv.created_at || '',
+    selected: false,
+  };
+}
+
+async function fetchInvoices() {
+  isLoading.value = true;
+  loadError.value = null;
+
+  try {
+    const response = await listInvoices(0, 100);
+    invoices.value = response.map(convertInvoice);
+  } catch (error) {
+    if (error instanceof ApiException) {
+      loadError.value = error.detail;
+    } else {
+      loadError.value = 'Failed to load invoices';
+    }
+    console.error('Failed to fetch invoices:', error);
+  } finally {
+    isLoading.value = false;
   }
-]);
+}
+
+onMounted(() => {
+  fetchInvoices();
+});
 
 const searchQuery = ref('');
-const statusFilter = ref<'all' | 'paid' | 'pending' | 'overdue'>('all');
 const sortBy = ref<'date' | 'vendor' | 'amount'>('date');
 const sortOrder = ref<'asc' | 'desc'>('desc');
 
@@ -163,17 +91,12 @@ const filteredInvoices = computed(() => {
     );
   }
 
-  // Status filter
-  if (statusFilter.value !== 'all') {
-    result = result.filter(inv => inv.status === statusFilter.value);
-  }
-
   // Sort
   result.sort((a, b) => {
     let comparison = 0;
     switch (sortBy.value) {
       case 'date':
-        comparison = new Date(a.date).getTime() - new Date(b.date).getTime();
+        comparison = new Date(a.date || '1970-01-01').getTime() - new Date(b.date || '1970-01-01').getTime();
         break;
       case 'vendor':
         comparison = a.vendor.localeCompare(b.vendor);
@@ -202,15 +125,10 @@ const allFilteredSelected = computed(() => {
 
 const stats = computed(() => {
   const total = invoices.value.length;
-  const paid = invoices.value.filter(inv => inv.status === 'paid').length;
-  const pending = invoices.value.filter(inv => inv.status === 'pending').length;
-  const overdue = invoices.value.filter(inv => inv.status === 'overdue').length;
   const totalAmount = invoices.value.reduce((sum, inv) => sum + inv.totalAmount, 0);
-  const paidAmount = invoices.value
-    .filter(inv => inv.status === 'paid')
-    .reduce((sum, inv) => sum + inv.totalAmount, 0);
+  const totalHT = invoices.value.reduce((sum, inv) => sum + inv.amount, 0);
 
-  return { total, paid, pending, overdue, totalAmount, paidAmount };
+  return { total, totalAmount, totalHT };
 });
 
 function toggleSelectAll() {
@@ -234,17 +152,17 @@ function toggleSort(field: 'date' | 'vendor' | 'amount') {
 }
 
 function formatDate(dateStr: string): string {
-  return new Date(dateStr).toLocaleDateString('fr-FR', {
-    day: '2-digit',
-    month: '2-digit',
+  return new Date(dateStr).toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
     year: 'numeric'
   });
 }
 
 function formatDateTime(dateStr: string): string {
-  return new Date(dateStr).toLocaleDateString('fr-FR', {
-    day: '2-digit',
-    month: '2-digit',
+  return new Date(dateStr).toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
     year: 'numeric',
     hour: '2-digit',
     minute: '2-digit'
@@ -253,6 +171,7 @@ function formatDateTime(dateStr: string): string {
 
 function getStatusLabel(status: string): string {
   switch (status) {
+    case 'imported': return 'Imported';
     case 'paid': return 'Paid';
     case 'pending': return 'Pending';
     case 'overdue': return 'Overdue';
@@ -260,9 +179,21 @@ function getStatusLabel(status: string): string {
   }
 }
 
-function deleteInvoice(id: string) {
-  if (confirm('Are you sure you want to delete this invoice?')) {
+async function handleDeleteInvoice(id: number) {
+  if (!confirm('Are you sure you want to delete this invoice?')) {
+    return;
+  }
+
+  isDeleting.value = true;
+  try {
+    await apiDeleteInvoice(id);
     invoices.value = invoices.value.filter(inv => inv.id !== id);
+  } catch (error) {
+    const message = error instanceof ApiException ? error.detail : 'Error deleting invoice';
+    alert(message);
+    console.error('Failed to delete invoice:', error);
+  } finally {
+    isDeleting.value = false;
   }
 }
 
@@ -274,21 +205,19 @@ function exportToCsv() {
     return;
   }
 
-  const headers = ['Invoice #', 'Vendor', 'Date', 'Due Date', 'Amount', 'Tax', 'Total', 'Currency', 'Status'];
+  const headers = ['Invoice #', 'Vendor', 'Date', 'Amount (excl. VAT)', 'VAT', 'Total Amount', 'Currency'];
   const rows = invoicesToExport.map(inv => [
     inv.invoiceNumber,
     `"${inv.vendor}"`,
     inv.date,
-    inv.dueDate,
     inv.amount.toFixed(2),
     inv.taxAmount.toFixed(2),
     inv.totalAmount.toFixed(2),
     inv.currency,
-    inv.status
   ]);
 
   const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
-  const blob = new Blob([csv], { type: 'text/csv' });
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -326,7 +255,7 @@ function exportToCsv() {
         </div>
 
         <!-- Stats Cards -->
-        <div class="stats-grid">
+        <div class="stats-grid stats-grid-3">
           <div class="stat-card">
             <div class="stat-icon">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -339,43 +268,6 @@ function exportToCsv() {
               <span class="stat-label">Total Invoices</span>
             </div>
           </div>
-          <div class="stat-card stat-paid">
-            <div class="stat-icon">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
-                <polyline points="22 4 12 14.01 9 11.01"></polyline>
-              </svg>
-            </div>
-            <div class="stat-info">
-              <span class="stat-value">{{ stats.paid }}</span>
-              <span class="stat-label">Paid</span>
-            </div>
-          </div>
-          <div class="stat-card stat-pending">
-            <div class="stat-icon">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <circle cx="12" cy="12" r="10"></circle>
-                <polyline points="12 6 12 12 16 14"></polyline>
-              </svg>
-            </div>
-            <div class="stat-info">
-              <span class="stat-value">{{ stats.pending }}</span>
-              <span class="stat-label">Pending</span>
-            </div>
-          </div>
-          <div class="stat-card stat-overdue">
-            <div class="stat-icon">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <circle cx="12" cy="12" r="10"></circle>
-                <line x1="12" y1="8" x2="12" y2="12"></line>
-                <line x1="12" y1="16" x2="12.01" y2="16"></line>
-              </svg>
-            </div>
-            <div class="stat-info">
-              <span class="stat-value">{{ stats.overdue }}</span>
-              <span class="stat-label">Overdue</span>
-            </div>
-          </div>
           <div class="stat-card stat-amount">
             <div class="stat-icon">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -384,8 +276,20 @@ function exportToCsv() {
               </svg>
             </div>
             <div class="stat-info">
-              <span class="stat-value">{{ stats.totalAmount.toLocaleString('fr-FR', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) }}</span>
-              <span class="stat-label">Total Amount (EUR)</span>
+              <span class="stat-value">{{ stats.totalHT.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) }}</span>
+              <span class="stat-label">Total (excl. VAT)</span>
+            </div>
+          </div>
+          <div class="stat-card stat-paid">
+            <div class="stat-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                <polyline points="22 4 12 14.01 9 11.01"></polyline>
+              </svg>
+            </div>
+            <div class="stat-info">
+              <span class="stat-value">{{ stats.totalAmount.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) }}</span>
+              <span class="stat-label">Total (incl. VAT)</span>
             </div>
           </div>
         </div>
@@ -403,15 +307,13 @@ function exportToCsv() {
               placeholder="Search by invoice # or vendor..."
             />
           </div>
-          <div class="filter-group">
-            <label>Status:</label>
-            <select v-model="statusFilter">
-              <option value="all">All</option>
-              <option value="paid">Paid</option>
-              <option value="pending">Pending</option>
-              <option value="overdue">Overdue</option>
-            </select>
-          </div>
+          <button class="btn btn-secondary btn-sm" @click="fetchInvoices" :disabled="isLoading">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="23 4 23 10 17 10"></polyline>
+              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+            </svg>
+            Refresh
+          </button>
           <div class="results-count">
             {{ filteredInvoices.length }} invoice(s)
           </div>
@@ -423,7 +325,7 @@ function exportToCsv() {
             <div class="selection-info">
               <span class="selection-count">{{ selectedCount }} invoice(s) selected</span>
               <span class="selection-total">
-                Total: {{ selectedTotal.toLocaleString('fr-FR', { minimumFractionDigits: 2 }) }} EUR
+                Total: {{ selectedTotal.toLocaleString('en-US', { minimumFractionDigits: 2 }) }} EUR
               </span>
             </div>
             <div class="selection-actions">
@@ -442,8 +344,25 @@ function exportToCsv() {
           </div>
         </transition>
 
+        <!-- Loading State -->
+        <div v-if="isLoading" class="loading-state">
+          <div class="spinner"></div>
+          <p>Loading invoices...</p>
+        </div>
+
+        <!-- Error State -->
+        <div v-else-if="loadError" class="error-state">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="12" y1="8" x2="12" y2="12"></line>
+            <line x1="12" y1="16" x2="12.01" y2="16"></line>
+          </svg>
+          <p>{{ loadError }}</p>
+          <button class="btn btn-primary" @click="fetchInvoices">Retry</button>
+        </div>
+
         <!-- Invoices Table -->
-        <div class="table-container">
+        <div v-else class="table-container">
           <table class="data-table">
             <thead>
               <tr>
@@ -464,12 +383,10 @@ function exportToCsv() {
                   Date
                   <span v-if="sortBy === 'date'" class="sort-icon">{{ sortOrder === 'asc' ? '↑' : '↓' }}</span>
                 </th>
-                <th class="col-due">Due Date</th>
                 <th class="col-amount sortable" @click="toggleSort('amount')">
-                  Amount
+                  Total Amount
                   <span v-if="sortBy === 'amount'" class="sort-icon">{{ sortOrder === 'asc' ? '↑' : '↓' }}</span>
                 </th>
-                <th class="col-status">Status</th>
                 <th class="col-imported">Imported</th>
                 <th class="col-actions"></th>
               </tr>
@@ -488,15 +405,9 @@ function exportToCsv() {
                 </td>
                 <td class="col-vendor">{{ invoice.vendor }}</td>
                 <td class="col-date">{{ formatDate(invoice.date) }}</td>
-                <td class="col-due">{{ formatDate(invoice.dueDate) }}</td>
                 <td class="col-amount">
-                  {{ invoice.totalAmount.toLocaleString('fr-FR', { minimumFractionDigits: 2 }) }}
+                  {{ invoice.totalAmount.toLocaleString('en-US', { minimumFractionDigits: 2 }) }}
                   <span class="currency">{{ invoice.currency }}</span>
-                </td>
-                <td class="col-status">
-                  <span :class="['status-badge', `status-${invoice.status}`]">
-                    {{ getStatusLabel(invoice.status) }}
-                  </span>
                 </td>
                 <td class="col-imported">
                   <span class="imported-date">{{ formatDateTime(invoice.importedAt) }}</span>
@@ -509,7 +420,12 @@ function exportToCsv() {
                         <circle cx="12" cy="12" r="3"></circle>
                       </svg>
                     </button>
-                    <button class="btn-icon btn-icon-danger" @click="deleteInvoice(invoice.id)" title="Delete">
+                    <button
+                      class="btn-icon btn-icon-danger"
+                      @click="handleDeleteInvoice(invoice.id)"
+                      title="Delete"
+                      :disabled="isDeleting"
+                    >
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <polyline points="3 6 5 6 21 6"></polyline>
                         <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
@@ -519,14 +435,14 @@ function exportToCsv() {
                 </td>
               </tr>
               <tr v-if="filteredInvoices.length === 0">
-                <td colspan="9" class="empty-state">
+                <td colspan="7" class="empty-state">
                   <div class="empty-content">
                     <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                       <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
                       <polyline points="14 2 14 8 20 8"></polyline>
                     </svg>
                     <p>No invoices found</p>
-                    <span>Try adjusting your search or filters</span>
+                    <span>{{ searchQuery ? 'Try a different search' : 'Import invoices from the home page' }}</span>
                   </div>
                 </td>
               </tr>
@@ -536,7 +452,7 @@ function exportToCsv() {
 
         <!-- Help Text -->
         <p class="help-text">
-          Select invoices using checkboxes, then click "Export to CSV" to download.
+          Select invoices using the checkboxes, then click "Export to CSV" to download.
         </p>
       </div>
     </main>
@@ -1009,5 +925,64 @@ input[type="checkbox"] {
     flex-direction: column;
     align-items: flex-start;
   }
+}
+
+/* Loading and Error States */
+.loading-state,
+.error-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--spacing-3xl);
+  background-color: var(--color-white);
+  border: 1px solid var(--color-gray-200);
+  border-radius: var(--border-radius-lg);
+  gap: var(--spacing-md);
+}
+
+.loading-state p,
+.error-state p {
+  color: var(--color-gray-600);
+  margin: 0;
+}
+
+.error-state svg {
+  color: var(--color-gray-400);
+}
+
+.spinner {
+  width: 40px;
+  height: 40px;
+  border: 4px solid var(--color-gray-200);
+  border-top-color: var(--color-black);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.stats-grid-3 {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+@media (max-width: 900px) {
+  .stats-grid-3 {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 600px) {
+  .stats-grid-3 {
+    grid-template-columns: 1fr;
+  }
+}
+
+.btn-sm {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
 }
 </style>
