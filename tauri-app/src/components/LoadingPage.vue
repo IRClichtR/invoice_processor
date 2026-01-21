@@ -1,11 +1,15 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
+import { analyzeDocument, processJob, type FileProcessingResult, type AnalyzeResponse, type ProcessResponse, type Pipeline } from '../api';
 
 interface ProcessingFile {
   name: string;
-  status: 'pending' | 'processing' | 'completed' | 'error';
+  file: File;
+  status: 'pending' | 'analyzing' | 'processing' | 'completed' | 'error';
   progress: number;
   error?: string;
+  analysis?: AnalyzeResponse;
+  result?: ProcessResponse;
 }
 
 const props = defineProps<{
@@ -13,7 +17,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  (e: 'complete', results: any[]): void;
+  (e: 'complete', results: FileProcessingResult[]): void;
   (e: 'error', message: string): void;
   (e: 'cancel'): void;
 }>();
@@ -21,25 +25,19 @@ const emit = defineEmits<{
 const status = ref<'processing' | 'success' | 'error'>('processing');
 const errorMessage = ref('');
 const currentStep = ref(1);
-const totalSteps = 4;
+const totalSteps = 3;
+const isCancelled = ref(false);
 
 const steps = [
-  { id: 1, label: 'Reading files', description: 'Extracting content from documents' },
-  { id: 2, label: 'AI Analysis', description: 'Running local AI model on documents' },
-  { id: 3, label: 'Data Extraction', description: 'Extracting invoice fields' },
-  { id: 4, label: 'Validation', description: 'Verifying extracted data' }
+  { id: 1, label: 'OCR Analysis', description: 'Analyzing document quality' },
+  { id: 2, label: 'AI Extraction', description: 'Extracting data with AI model' },
+  { id: 3, label: 'Finalization', description: 'Saving to database' }
 ];
 
-// Mock files being processed
-const processingFiles = ref<ProcessingFile[]>([
-  { name: 'invoice_2024_001.pdf', status: 'completed', progress: 100 },
-  { name: 'invoice_2024_002.pdf', status: 'completed', progress: 100 },
-  { name: 'facture_janvier.pdf', status: 'processing', progress: 65 },
-  { name: 'scan_receipt.pdf', status: 'pending', progress: 0 },
-  { name: 'invoice_cloud_services.pdf', status: 'pending', progress: 0 }
-]);
+const processingFiles = ref<ProcessingFile[]>([]);
 
 const overallProgress = computed(() => {
+  if (processingFiles.value.length === 0) return 0;
   const total = processingFiles.value.length * 100;
   const current = processingFiles.value.reduce((sum, file) => sum + file.progress, 0);
   return Math.round((current / total) * 100);
@@ -49,70 +47,126 @@ const completedCount = computed(() =>
   processingFiles.value.filter(f => f.status === 'completed').length
 );
 
-const processingCount = computed(() =>
-  processingFiles.value.filter(f => f.status === 'processing').length
+const errorCount = computed(() =>
+  processingFiles.value.filter(f => f.status === 'error').length
 );
 
-// Mock processing simulation
-onMounted(() => {
-  simulateProcessing();
-});
+// Initialize files when props change
+watch(() => props.files, (newFiles) => {
+  if (newFiles && newFiles.length > 0) {
+    processingFiles.value = newFiles.map(file => ({
+      name: file.name,
+      file,
+      status: 'pending',
+      progress: 0,
+    }));
+    startProcessing();
+  }
+}, { immediate: true });
 
-async function simulateProcessing() {
-  // Simulate step progression
-  for (let step = 1; step <= totalSteps; step++) {
-    currentStep.value = step;
-    await delay(1500);
+async function startProcessing() {
+  if (!props.files || props.files.length === 0) {
+    status.value = 'error';
+    errorMessage.value = 'No files to process';
+    return;
   }
 
-  // Simulate file processing
-  for (const file of processingFiles.value) {
-    if (file.status === 'pending') {
-      file.status = 'processing';
+  status.value = 'processing';
+  isCancelled.value = false;
+  currentStep.value = 1;
+
+  try {
+    // Process files sequentially
+    for (let i = 0; i < processingFiles.value.length; i++) {
+      if (isCancelled.value) break;
+
+      const pf = processingFiles.value[i];
+
+      // Step 1: Analyze
+      pf.status = 'analyzing';
+      pf.progress = 10;
+      currentStep.value = 1;
+
+      try {
+        const analysis = await analyzeDocument(pf.file);
+        pf.analysis = analysis;
+        pf.progress = 50;
+
+        if (isCancelled.value) break;
+
+        // Step 2: Process with suggested pipeline
+        pf.status = 'processing';
+        currentStep.value = 2;
+
+        const pipeline: Pipeline = analysis.suggested_pipeline;
+        const result = await processJob(analysis.job_id, pipeline, true);
+        pf.result = result;
+        pf.progress = 90;
+
+        if (isCancelled.value) break;
+
+        // Step 3: Finalize
+        currentStep.value = 3;
+        pf.progress = 100;
+
+        if (result.success) {
+          pf.status = 'completed';
+        } else {
+          pf.status = 'error';
+          pf.error = result.error || 'Processing error';
+        }
+      } catch (error) {
+        pf.status = 'error';
+        pf.error = error instanceof Error ? error.message : 'Unknown error';
+        pf.progress = 100;
+      }
     }
 
-    while (file.progress < 100 && file.status === 'processing') {
-      await delay(100);
-      file.progress = Math.min(100, file.progress + Math.random() * 15);
-    }
+    if (!isCancelled.value) {
+      // Determine final status
+      const hasErrors = processingFiles.value.some(f => f.status === 'error');
+      const allErrors = processingFiles.value.every(f => f.status === 'error');
 
-    file.progress = 100;
-    file.status = 'completed';
+      if (allErrors) {
+        status.value = 'error';
+        errorMessage.value = 'All files failed to process';
+      } else {
+        status.value = 'success';
+      }
+    }
+  } catch (error) {
+    status.value = 'error';
+    errorMessage.value = error instanceof Error ? error.message : 'Processing error';
+    emit('error', errorMessage.value);
   }
-
-  await delay(500);
-  status.value = 'success';
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function handleComplete() {
-  emit('complete', []);
+  // Build results from processing files
+  const results: FileProcessingResult[] = processingFiles.value.map(pf => ({
+    filename: pf.name,
+    success: pf.status === 'completed' && pf.result?.success === true,
+    analysis: pf.analysis || null,
+    processing: pf.result || null,
+    error: pf.error || null,
+  }));
+  emit('complete', results);
 }
 
 function handleCancel() {
+  isCancelled.value = true;
   emit('cancel');
 }
 
 function handleRetry() {
-  status.value = 'processing';
-  currentStep.value = 1;
   processingFiles.value.forEach(f => {
     f.status = 'pending';
     f.progress = 0;
+    f.error = undefined;
+    f.analysis = undefined;
+    f.result = undefined;
   });
-  simulateProcessing();
-}
-
-function getFileIcon(status: string) {
-  switch (status) {
-    case 'completed': return 'check';
-    case 'processing': return 'spinner';
-    case 'error': return 'error';
-    default: return 'pending';
-  }
+  startProcessing();
 }
 </script>
 
@@ -199,7 +253,7 @@ function getFileIcon(status: string) {
                     <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
                     <polyline points="22 4 12 14.01 9 11.01"></polyline>
                   </svg>
-                  <div v-else-if="file.status === 'processing'" class="mini-spinner"></div>
+                  <div v-else-if="file.status === 'analyzing' || file.status === 'processing'" class="mini-spinner"></div>
                   <svg v-else-if="file.status === 'error'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <circle cx="12" cy="12" r="10"></circle>
                     <line x1="15" y1="9" x2="9" y2="15"></line>
@@ -210,6 +264,7 @@ function getFileIcon(status: string) {
                   </svg>
                 </div>
                 <span class="file-name">{{ file.name }}</span>
+                <span v-if="file.error" class="file-error" :title="file.error">{{ file.error }}</span>
                 <div class="file-progress">
                   <div class="file-progress-bar">
                     <div class="file-progress-fill" :style="{ width: `${file.progress}%` }"></div>
@@ -230,7 +285,7 @@ function getFileIcon(status: string) {
           </div>
           <h1>Processing Complete</h1>
           <p class="state-description">
-            Successfully processed {{ processingFiles.length }} document(s).
+            Successfully processed {{ completedCount }} document(s).
             Ready to review extracted data.
           </p>
 
@@ -244,7 +299,7 @@ function getFileIcon(status: string) {
               <span class="stat-label">Successful</span>
             </div>
             <div class="success-stat">
-              <span class="stat-value">0</span>
+              <span class="stat-value">{{ errorCount }}</span>
               <span class="stat-label">Errors</span>
             </div>
           </div>
@@ -552,6 +607,24 @@ function getFileIcon(status: string) {
 
 .file-completed .file-progress-fill {
   background-color: #166534;
+}
+
+.file-error .file-progress-fill {
+  background-color: #991b1b;
+}
+
+.file-error-text {
+  flex: 1;
+  font-size: 0.75rem;
+  color: #991b1b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-left: var(--spacing-sm);
+}
+
+.file-analyzing .file-icon {
+  color: #1e40af;
 }
 
 /* Success Stats */

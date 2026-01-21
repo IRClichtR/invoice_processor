@@ -3,6 +3,9 @@ Qwen2-VL Service for Invoice Data Extraction
 
 PDF -> Image -> Qwen2-VL -> Structured JSON
 Model cached locally, CPU-only (~2-3 GB RAM)
+
+
+/!\ Code is not in use. Kept for reference.
 """
 
 from typing import Dict, Any, List, Optional
