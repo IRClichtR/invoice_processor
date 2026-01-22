@@ -69,7 +69,8 @@ class ProcessingService:
         job_id: str,
         pipeline: str,
         save_to_db: bool,
-        db: Session
+        db: Session,
+        user_preference: str = 'auto'
     ) -> Dict[str, Any]:
         """
         Process a job with the chosen pipeline.
@@ -79,6 +80,7 @@ class ProcessingService:
             pipeline: Processing pipeline ('florence' or 'claude')
             save_to_db: Whether to save the result to database
             db: Database session
+            user_preference: User's processing preference ('local', 'cloud', or 'auto')
 
         Returns:
             {
@@ -89,7 +91,10 @@ class ProcessingService:
                 'processing_method': str,
                 'error': str or None,
                 'requires_api_key': bool,
-                'console_url': str or None
+                'console_url': str or None,
+                'requires_confirmation': bool,
+                'warning': str or None,
+                'suggested_pipeline': str or None
             }
         """
         result = {
@@ -100,13 +105,34 @@ class ProcessingService:
             'processing_method': pipeline,
             'error': None,
             'requires_api_key': False,
-            'console_url': None
+            'console_url': None,
+            'requires_confirmation': False,
+            'warning': None,
+            'suggested_pipeline': None
         }
 
         # Get and validate job
         job, error = self.analysis_service.get_job_for_processing(job_id, db)
         if error:
             result['error'] = error
+            return result
+
+        # Check user preference vs suggested pipeline
+        # If user wants local only but the suggested pipeline is claude (low quality doc),
+        # return a confirmation request
+        if user_preference == 'local' and pipeline == 'claude':
+            logger.info(
+                "User preference is local but claude pipeline requested",
+                job_id=job_id,
+                confidence=job.confidence_score
+            )
+            result['requires_confirmation'] = True
+            result['warning'] = 'low_quality_local'
+            result['suggested_pipeline'] = 'claude'
+            result['error'] = (
+                'Document quality is low. Local processing may produce poor results. '
+                'Consider using Cloud AI for better accuracy.'
+            )
             return result
 
         # Mark job as processing

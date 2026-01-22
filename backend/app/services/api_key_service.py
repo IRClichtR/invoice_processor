@@ -12,7 +12,7 @@ import structlog
 
 from cryptography.fernet import Fernet, InvalidToken
 
-from app.core.config import settings
+from app.core.config import settings, check_and_rotate_encryption_key
 from app.models.api_key import ApiKey
 
 logger = structlog.get_logger(__name__)
@@ -59,7 +59,8 @@ class ApiKeyService:
         provider: str,
         key: str,
         db: Session,
-        validate: bool = True
+        validate: bool = True,
+        source: str = 'manual'
     ) -> Dict[str, Any]:
         """
         Store an API key (encrypted) for a provider.
@@ -69,6 +70,7 @@ class ApiKeyService:
             key: The API key to store
             db: Database session
             validate: Whether to validate the key with the provider
+            source: Source of the key ('manual', 'env_migrated')
 
         Returns:
             {
@@ -78,7 +80,7 @@ class ApiKeyService:
                 'provider': str
             }
         """
-        logger.info("Storing API key", provider=provider)
+        logger.info("Storing API key", provider=provider, source=source)
 
         # Validate key format
         if not key or len(key) < 10:
@@ -112,6 +114,7 @@ class ApiKeyService:
             existing.key_prefix = key_prefix
             existing.is_valid = True
             existing.validation_error = None
+            existing.source = source
             api_key_record = existing
         else:
             # Create new key
@@ -119,7 +122,8 @@ class ApiKeyService:
                 provider=provider,
                 encrypted_key=encrypted_key,
                 key_prefix=key_prefix,
-                is_valid=True
+                is_valid=True,
+                source=source
             )
             db.add(api_key_record)
 
@@ -299,11 +303,15 @@ class ApiKeyService:
         Returns:
             {
                 'anthropic': {
+                    'provider': str,
+                    'status': 'valid' | 'invalid' | 'expired' | 'not_configured',
                     'configured': bool,
                     'valid': bool,
-                    'key_prefix': str,
-                    'error': str or None,
-                    'last_validated_at': str or None
+                    'expired': bool,
+                    'key_prefix': str | None,
+                    'error': str | None,
+                    'source': str | None,
+                    'last_validated_at': str | None
                 },
                 ...
             }
@@ -321,10 +329,13 @@ class ApiKeyService:
             if provider not in result:
                 result[provider] = {
                     'provider': provider,
+                    'status': 'not_configured',
                     'configured': False,
                     'valid': False,
+                    'expired': False,
                     'key_prefix': None,
                     'error': 'Not configured',
+                    'source': None,
                     'last_validated_at': None
                 }
 
@@ -344,9 +355,9 @@ class ApiKeyService:
         # Try database first
         db_key = self.get_api_key('anthropic', db)
         if db_key:
-            # Check if it's marked as valid
+            # Check if it's marked as valid and not expired
             api_key_record = db.query(ApiKey).filter(ApiKey.provider == 'anthropic').first()
-            if api_key_record and api_key_record.is_valid:
+            if api_key_record and api_key_record.is_valid and not api_key_record.is_expired():
                 return db_key
 
         # Fallback to environment variable
@@ -354,3 +365,115 @@ class ApiKeyService:
             return settings.ANTHROPIC_API_KEY
 
         return None
+
+    def migrate_env_key_to_db(self, db: Session) -> bool:
+        """
+        Migrate API key from environment variable to database.
+
+        This is called at startup to ensure env keys are stored securely in DB.
+        Returns True if a migration was performed.
+        """
+        # Check if key already in DB
+        existing = db.query(ApiKey).filter(ApiKey.provider == 'anthropic').first()
+        if existing:
+            logger.debug("Anthropic API key already in database, skipping migration")
+            return False
+
+        # Check if valid key in env
+        if not settings.has_valid_claude_api_key():
+            logger.debug("No valid Anthropic API key in environment to migrate")
+            return False
+
+        # Migrate env key to DB
+        logger.info("Migrating ANTHROPIC_API_KEY from environment to database")
+        result = self.store_api_key(
+            'anthropic',
+            settings.ANTHROPIC_API_KEY,
+            db,
+            validate=True,
+            source='env_migrated'
+        )
+
+        if result['success']:
+            logger.info("Successfully migrated Anthropic API key from environment to database")
+            return True
+        else:
+            logger.warning("Failed to migrate Anthropic API key", error=result.get('error'))
+            return False
+
+    def rotate_encryption_key(self, old_key: str, new_key: str, db: Session) -> bool:
+        """
+        Re-encrypt all API keys with a new encryption key.
+
+        Args:
+            old_key: The old Fernet encryption key
+            new_key: The new Fernet encryption key
+            db: Database session
+
+        Returns:
+            True if rotation was successful
+        """
+        try:
+            old_fernet = Fernet(old_key.encode())
+            new_fernet = Fernet(new_key.encode())
+
+            # Get all API keys
+            api_keys = db.query(ApiKey).all()
+
+            if not api_keys:
+                logger.info("No API keys to re-encrypt during key rotation")
+                return True
+
+            for api_key_record in api_keys:
+                try:
+                    # Decrypt with old key
+                    decrypted = old_fernet.decrypt(
+                        api_key_record.encrypted_key.encode()
+                    ).decode()
+
+                    # Re-encrypt with new key
+                    api_key_record.encrypted_key = new_fernet.encrypt(
+                        decrypted.encode()
+                    ).decode()
+
+                    logger.debug(
+                        "Re-encrypted API key",
+                        provider=api_key_record.provider
+                    )
+                except InvalidToken:
+                    logger.error(
+                        "Failed to decrypt API key during rotation",
+                        provider=api_key_record.provider
+                    )
+                    # Continue with other keys
+
+            db.commit()
+
+            # Update the service's fernet instance
+            self.fernet = new_fernet
+
+            logger.info(
+                "Encryption key rotation completed",
+                keys_rotated=len(api_keys)
+            )
+            return True
+
+        except Exception as e:
+            logger.error("Encryption key rotation failed", error=str(e))
+            db.rollback()
+            return False
+
+    def check_and_perform_key_rotation(self, db: Session) -> bool:
+        """
+        Check if encryption key rotation is needed and perform it.
+
+        Returns:
+            True if rotation was performed, False otherwise
+        """
+        rotation_needed, old_key, new_key = check_and_rotate_encryption_key()
+
+        if not rotation_needed:
+            return False
+
+        logger.info("Encryption key rotation triggered")
+        return self.rotate_encryption_key(old_key, new_key, db)

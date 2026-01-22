@@ -133,6 +133,7 @@ class ProcessRequest(BaseModel):
     job_id: str
     pipeline: Literal['florence', 'claude']
     save_to_db: bool = True
+    user_preference: Literal['local', 'cloud', 'auto'] = 'auto'
 
 
 class ProcessResponse(BaseModel):
@@ -145,6 +146,9 @@ class ProcessResponse(BaseModel):
     error: str | None = None
     requires_api_key: bool = False
     console_url: str | None = None
+    requires_confirmation: bool = False
+    warning: str | None = None
+    suggested_pipeline: str | None = None
 
 
 class JobStatusResponse(BaseModel):
@@ -235,12 +239,19 @@ def _analyze_document_in_thread(file_path: str, original_filename: str) -> Dict[
         db.close()
 
 
-def _process_job_in_thread(job_id: str, pipeline: str, save_to_db: bool) -> Dict[str, Any]:
+def _process_job_in_thread(
+    job_id: str,
+    pipeline: str,
+    save_to_db: bool,
+    user_preference: str = 'auto'
+) -> Dict[str, Any]:
     """Thread-safe job processing"""
     db = SessionLocal()
     try:
         processing_service = ProcessingService()
-        return processing_service.process_job(job_id, pipeline, save_to_db, db)
+        return processing_service.process_job(
+            job_id, pipeline, save_to_db, db, user_preference
+        )
     finally:
         db.close()
 
@@ -341,16 +352,21 @@ async def process_document(request: ProcessRequest):
     If Claude is selected but no API key is configured, the response will include
     requires_api_key=true and console_url for obtaining a key.
 
+    If user_preference is 'local' and the pipeline is 'claude' (for low quality docs),
+    the response will include requires_confirmation=true to let the user decide.
+
     Args:
         job_id: The job ID from /analyze response
         pipeline: 'florence' or 'claude'
         save_to_db: Whether to save extracted invoice to database (default: true)
+        user_preference: 'local', 'cloud', or 'auto' (default: 'auto')
     """
     result = await run_in_threadpool(
         _process_job_in_thread,
         request.job_id,
         request.pipeline,
-        request.save_to_db
+        request.save_to_db,
+        request.user_preference
     )
     return ProcessResponse(**result)
 

@@ -40,10 +40,13 @@ class StoreApiKeyResponse(BaseModel):
 class ProviderStatus(BaseModel):
     """Status of a single provider's API key"""
     provider: str
+    status: str  # 'valid', 'invalid', 'expired', 'not_configured'
     configured: bool
     valid: bool
+    expired: bool = False
     key_prefix: Optional[str] = None
     error: Optional[str] = None
+    source: Optional[str] = None  # 'manual', 'env_migrated'
     last_validated_at: Optional[str] = None
 
 
@@ -123,10 +126,13 @@ async def get_api_key_status(db: Session = Depends(get_db)):
     # Build response with status for each provider
     anthropic_status = all_status.get('anthropic', {
         'provider': 'anthropic',
+        'status': 'not_configured',
         'configured': False,
         'valid': False,
+        'expired': False,
         'key_prefix': None,
         'error': 'Not configured',
+        'source': None,
         'last_validated_at': None
     })
 

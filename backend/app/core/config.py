@@ -1,10 +1,60 @@
 import os
-from typing import Optional
+import json
+from typing import Optional, Tuple
 from pathlib import Path
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Constants
+CONFIG_DIR = Path.home() / ".config" / "parsefacture"
+ENCRYPTION_KEY_FILE = CONFIG_DIR / "encryption.key"
+ENCRYPTION_META_FILE = CONFIG_DIR / "encryption.meta.json"
+KEY_ROTATION_DAYS = 30
+
+
+def _get_encryption_metadata() -> dict:
+    """Get encryption key metadata (creation date, etc.)"""
+    if ENCRYPTION_META_FILE.exists():
+        try:
+            return json.loads(ENCRYPTION_META_FILE.read_text())
+        except (json.JSONDecodeError, IOError):
+            pass
+    return {}
+
+
+def _save_encryption_metadata(metadata: dict) -> None:
+    """Save encryption key metadata"""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    ENCRYPTION_META_FILE.write_text(json.dumps(metadata, indent=2))
+    ENCRYPTION_META_FILE.chmod(0o600)
+
+
+def _generate_new_key() -> str:
+    """Generate a new Fernet encryption key"""
+    try:
+        from cryptography.fernet import Fernet
+        return Fernet.generate_key().decode('utf-8')
+    except ImportError:
+        import secrets
+        import base64
+        return base64.urlsafe_b64encode(secrets.token_bytes(32)).decode('utf-8')
+
+
+def _key_needs_rotation() -> bool:
+    """Check if the encryption key is older than KEY_ROTATION_DAYS"""
+    metadata = _get_encryption_metadata()
+    created_at_str = metadata.get('created_at')
+    if not created_at_str:
+        return False  # No metadata = new key, don't rotate yet
+
+    try:
+        created_at = datetime.fromisoformat(created_at_str)
+        return datetime.utcnow() - created_at > timedelta(days=KEY_ROTATION_DAYS)
+    except (ValueError, TypeError):
+        return False
 
 
 def _get_or_create_encryption_key() -> str:
@@ -12,6 +62,7 @@ def _get_or_create_encryption_key() -> str:
     Get encryption key from env var or generate and store one.
 
     The key is stored in ~/.config/parsefacture/encryption.key
+    Metadata is stored in ~/.config/parsefacture/encryption.meta.json
     """
     # Check env var first
     env_key = os.getenv("API_KEY_ENCRYPTION_KEY")
@@ -19,28 +70,61 @@ def _get_or_create_encryption_key() -> str:
         return env_key
 
     # Use local file for auto-generated key
-    config_dir = Path.home() / ".config" / "parsefacture"
-    key_file = config_dir / "encryption.key"
-
-    if key_file.exists():
-        return key_file.read_text().strip()
+    if ENCRYPTION_KEY_FILE.exists():
+        return ENCRYPTION_KEY_FILE.read_text().strip()
 
     # Generate new key
-    try:
-        from cryptography.fernet import Fernet
-        new_key = Fernet.generate_key().decode('utf-8')
-    except ImportError:
-        # Fallback if cryptography not installed yet
-        import secrets
-        import base64
-        new_key = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode('utf-8')
+    new_key = _generate_new_key()
 
-    # Store key
-    config_dir.mkdir(parents=True, exist_ok=True)
-    key_file.write_text(new_key)
-    key_file.chmod(0o600)  # Restrict permissions
+    # Store key and metadata
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    ENCRYPTION_KEY_FILE.write_text(new_key)
+    ENCRYPTION_KEY_FILE.chmod(0o600)
+
+    _save_encryption_metadata({
+        'created_at': datetime.utcnow().isoformat(),
+        'version': 1
+    })
 
     return new_key
+
+
+def check_and_rotate_encryption_key() -> Tuple[bool, Optional[str], Optional[str]]:
+    """
+    Check if encryption key needs rotation and perform rotation if needed.
+
+    Returns:
+        Tuple of (rotation_needed, old_key, new_key)
+        If rotation is not needed, returns (False, None, None)
+    """
+    # Don't rotate if using env var
+    if os.getenv("API_KEY_ENCRYPTION_KEY"):
+        return (False, None, None)
+
+    if not _key_needs_rotation():
+        return (False, None, None)
+
+    if not ENCRYPTION_KEY_FILE.exists():
+        return (False, None, None)
+
+    # Get old key
+    old_key = ENCRYPTION_KEY_FILE.read_text().strip()
+
+    # Generate new key
+    new_key = _generate_new_key()
+
+    # Store new key
+    ENCRYPTION_KEY_FILE.write_text(new_key)
+    ENCRYPTION_KEY_FILE.chmod(0o600)
+
+    # Update metadata
+    metadata = _get_encryption_metadata()
+    metadata['created_at'] = datetime.utcnow().isoformat()
+    metadata['version'] = metadata.get('version', 1) + 1
+    metadata['last_rotation'] = datetime.utcnow().isoformat()
+    _save_encryption_metadata(metadata)
+
+    return (True, old_key, new_key)
 
 
 class Settings:
