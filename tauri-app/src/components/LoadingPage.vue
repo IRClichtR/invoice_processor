@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue';
-import { analyzeDocument, processJob, type FileProcessingResult, type AnalyzeResponse, type ProcessResponse, type Pipeline } from '../api';
+import { ref, computed, watch } from 'vue';
+import { analyzeDocument, processJob, type FileProcessingResult, type AnalyzeResponse, type ProcessResponse, type Pipeline, type UserPreference } from '../api';
+import QualityConfirmModal from './QualityConfirmModal.vue';
+import type { ApiKeyStatus } from '../api/types';
 
 interface ProcessingFile {
   name: string;
   file: File;
-  status: 'pending' | 'analyzing' | 'processing' | 'completed' | 'error';
+  status: 'pending' | 'analyzing' | 'processing' | 'awaiting_confirmation' | 'completed' | 'error';
   progress: number;
   error?: string;
   analysis?: AnalyzeResponse;
@@ -14,19 +16,26 @@ interface ProcessingFile {
 
 const props = defineProps<{
   files?: File[];
+  apiKeyStatus: ApiKeyStatus | null;
+  processingMode: 'local' | 'cloud';
 }>();
 
 const emit = defineEmits<{
   (e: 'complete', results: FileProcessingResult[]): void;
   (e: 'error', message: string): void;
   (e: 'cancel'): void;
+  (e: 'configure-api-key'): void;
 }>();
 
 const status = ref<'processing' | 'success' | 'error'>('processing');
 const errorMessage = ref('');
 const currentStep = ref(1);
-const totalSteps = 3;
 const isCancelled = ref(false);
+
+// Quality confirmation modal state
+const showQualityModal = ref(false);
+const pendingConfirmationFile = ref<ProcessingFile | null>(null);
+const isProcessingPaused = ref(false);
 
 const steps = [
   { id: 1, label: 'OCR Analysis', description: 'Analyzing document quality' },
@@ -51,6 +60,14 @@ const errorCount = computed(() =>
   processingFiles.value.filter(f => f.status === 'error').length
 );
 
+const hasValidApiKey = computed(() => {
+  return props.apiKeyStatus?.configured && props.apiKeyStatus?.valid;
+});
+
+const userPreference = computed<UserPreference>(() => {
+  return props.processingMode === 'local' ? 'local' : 'cloud';
+});
+
 // Initialize files when props change
 watch(() => props.files, (newFiles) => {
   if (newFiles && newFiles.length > 0) {
@@ -73,6 +90,7 @@ async function startProcessing() {
 
   status.value = 'processing';
   isCancelled.value = false;
+  isProcessingPaused.value = false;
   currentStep.value = 1;
 
   try {
@@ -99,9 +117,31 @@ async function startProcessing() {
         currentStep.value = 2;
 
         const pipeline: Pipeline = analysis.suggested_pipeline;
-        const result = await processJob(analysis.job_id, pipeline, true);
-        pf.result = result;
-        pf.progress = 90;
+
+        // If user wants local but suggested pipeline is claude (low quality),
+        // we need to check user preference
+        const result = await processJob(analysis.job_id, pipeline, true, userPreference.value);
+
+        // Check if confirmation is needed
+        if (result.requires_confirmation) {
+          pf.status = 'awaiting_confirmation';
+          pf.result = result;
+          pendingConfirmationFile.value = pf;
+          showQualityModal.value = true;
+          isProcessingPaused.value = true;
+
+          // Wait for user decision
+          await waitForConfirmation();
+
+          // After confirmation, check if cancelled
+          if (isCancelled.value) break;
+
+          // If user continued, the file status should be updated
+          if (pf.status === 'error') continue;
+        } else {
+          pf.result = result;
+          pf.progress = 90;
+        }
 
         if (isCancelled.value) break;
 
@@ -109,11 +149,11 @@ async function startProcessing() {
         currentStep.value = 3;
         pf.progress = 100;
 
-        if (result.success) {
+        if (pf.result?.success) {
           pf.status = 'completed';
-        } else {
+        } else if (pf.status !== 'error') {
           pf.status = 'error';
-          pf.error = result.error || 'Processing error';
+          pf.error = pf.result?.error || 'Processing error';
         }
       } catch (error) {
         pf.status = 'error';
@@ -143,6 +183,107 @@ async function startProcessing() {
   }
 }
 
+function waitForConfirmation(): Promise<void> {
+  return new Promise((resolve) => {
+    const checkInterval = setInterval(() => {
+      if (!isProcessingPaused.value || isCancelled.value) {
+        clearInterval(checkInterval);
+        resolve();
+      }
+    }, 100);
+  });
+}
+
+async function handleContinueLocal() {
+  if (!pendingConfirmationFile.value) return;
+
+  const pf = pendingConfirmationFile.value;
+  showQualityModal.value = false;
+
+  // Continue processing with florence pipeline (local)
+  pf.status = 'processing';
+  try {
+    const result = await processJob(pf.analysis!.job_id, 'florence', true, 'auto');
+    pf.result = result;
+    pf.progress = 90;
+
+    if (result.success) {
+      pf.status = 'completed';
+      pf.progress = 100;
+    } else {
+      pf.status = 'error';
+      pf.error = result.error || 'Processing error';
+      pf.progress = 100;
+    }
+  } catch (error) {
+    pf.status = 'error';
+    pf.error = error instanceof Error ? error.message : 'Unknown error';
+    pf.progress = 100;
+  }
+
+  pendingConfirmationFile.value = null;
+  isProcessingPaused.value = false;
+}
+
+async function handleUseCloud() {
+  if (!pendingConfirmationFile.value) return;
+
+  const pf = pendingConfirmationFile.value;
+  showQualityModal.value = false;
+
+  // Process with claude pipeline
+  pf.status = 'processing';
+  try {
+    const result = await processJob(pf.analysis!.job_id, 'claude', true, 'cloud');
+    pf.result = result;
+    pf.progress = 90;
+
+    if (result.success) {
+      pf.status = 'completed';
+      pf.progress = 100;
+    } else if (result.requires_api_key) {
+      // Need to configure API key
+      pf.status = 'error';
+      pf.error = 'API key required';
+      pf.progress = 100;
+    } else {
+      pf.status = 'error';
+      pf.error = result.error || 'Processing error';
+      pf.progress = 100;
+    }
+  } catch (error) {
+    pf.status = 'error';
+    pf.error = error instanceof Error ? error.message : 'Unknown error';
+    pf.progress = 100;
+  }
+
+  pendingConfirmationFile.value = null;
+  isProcessingPaused.value = false;
+}
+
+function handleConfigureApiKey() {
+  if (pendingConfirmationFile.value) {
+    pendingConfirmationFile.value.status = 'error';
+    pendingConfirmationFile.value.error = 'Waiting for API key configuration';
+    pendingConfirmationFile.value.progress = 100;
+  }
+  showQualityModal.value = false;
+  pendingConfirmationFile.value = null;
+  isProcessingPaused.value = false;
+  emit('configure-api-key');
+}
+
+function handleModalCancel() {
+  if (pendingConfirmationFile.value) {
+    pendingConfirmationFile.value.status = 'error';
+    pendingConfirmationFile.value.error = 'Processing cancelled by user';
+    pendingConfirmationFile.value.progress = 100;
+  }
+  showQualityModal.value = false;
+  pendingConfirmationFile.value = null;
+  isProcessingPaused.value = false;
+}
+
 function handleComplete() {
   // Build results from processing files
   const results: FileProcessingResult[] = processingFiles.value.map(pf => ({
@@ -157,6 +298,8 @@ function handleComplete() {
 
 function handleCancel() {
   isCancelled.value = true;
+  showQualityModal.value = false;
+  isProcessingPaused.value = false;
   emit('cancel');
 }
 
@@ -225,7 +368,7 @@ function getErrorMessage(error: string): string {
           </div>
           <h1>Processing Documents</h1>
           <p class="state-description">
-            Analyzing your invoices with local AI. This may take a moment.
+            Analyzing your invoices with {{ processingMode === 'local' ? 'local' : 'cloud' }} AI. This may take a moment.
           </p>
 
           <!-- Progress Bar -->
@@ -280,6 +423,11 @@ function getErrorMessage(error: string): string {
                     <polyline points="22 4 12 14.01 9 11.01"></polyline>
                   </svg>
                   <div v-else-if="file.status === 'analyzing' || file.status === 'processing'" class="mini-spinner"></div>
+                  <svg v-else-if="file.status === 'awaiting_confirmation'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <line x1="12" y1="8" x2="12" y2="12"></line>
+                    <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                  </svg>
                   <svg v-else-if="file.status === 'error'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <circle cx="12" cy="12" r="10"></circle>
                     <line x1="15" y1="9" x2="9" y2="15"></line>
@@ -290,7 +438,8 @@ function getErrorMessage(error: string): string {
                   </svg>
                 </div>
                 <span class="file-name">{{ file.name }}</span>
-                <span v-if="file.error" class="file-error-text" :title="file.error">{{ getErrorMessage(file.error) }}</span>
+                <span v-if="file.status === 'awaiting_confirmation'" class="file-status-text">Awaiting decision...</span>
+                <span v-else-if="file.error" class="file-error-text" :title="file.error">{{ getErrorMessage(file.error) }}</span>
                 <div v-else class="file-progress">
                   <div class="file-progress-bar">
                     <div class="file-progress-fill" :style="{ width: `${file.progress}%` }"></div>
@@ -387,6 +536,18 @@ function getErrorMessage(error: string): string {
         </div>
       </div>
     </main>
+
+    <!-- Quality Confirmation Modal -->
+    <QualityConfirmModal
+      :visible="showQualityModal"
+      :document-name="pendingConfirmationFile?.name || ''"
+      :quality-score="pendingConfirmationFile?.analysis?.confidence_score"
+      :has-valid-api-key="hasValidApiKey"
+      @continue-local="handleContinueLocal"
+      @use-cloud="handleUseCloud"
+      @configure-api-key="handleConfigureApiKey"
+      @cancel="handleModalCancel"
+    />
   </div>
 </template>
 
@@ -615,6 +776,10 @@ function getErrorMessage(error: string): string {
   color: var(--color-gray-400);
 }
 
+.file-awaiting_confirmation .file-icon {
+  color: #d97706;
+}
+
 .mini-spinner {
   width: 16px;
   height: 16px;
@@ -668,6 +833,14 @@ function getErrorMessage(error: string): string {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  margin-left: var(--spacing-sm);
+}
+
+.file-status-text {
+  flex: 1;
+  font-size: 0.75rem;
+  color: #d97706;
+  font-style: italic;
   margin-left: var(--spacing-sm);
 }
 
