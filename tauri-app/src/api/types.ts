@@ -97,10 +97,13 @@ export interface AnalyzeResponse {
 
 export type Pipeline = 'florence' | 'claude';
 
+export type UserPreference = 'local' | 'cloud' | 'auto';
+
 export interface ProcessRequest {
   job_id: string;
   pipeline: Pipeline;
   save_to_db?: boolean;
+  user_preference?: UserPreference;
 }
 
 export interface ExtractedLineItem {
@@ -131,6 +134,9 @@ export interface ProcessResponse {
   error: string | null;
   requires_api_key: boolean;
   console_url: string | null;
+  requires_confirmation: boolean;
+  warning: string | null;
+  suggested_pipeline: string | null;
 }
 
 // ============================================================================
@@ -189,12 +195,17 @@ export interface ApiKeyStoreResponse {
   error: string | null;
 }
 
+export type ApiKeyStatusType = 'valid' | 'invalid' | 'expired' | 'not_configured';
+
 export interface ApiKeyStatus {
   provider: string;
+  status: ApiKeyStatusType;
   configured: boolean;
   valid: boolean;
+  expired: boolean;
   key_prefix: string | null;
   error: string | null;
+  source: string | null;
   last_validated_at: string | null;
 }
 

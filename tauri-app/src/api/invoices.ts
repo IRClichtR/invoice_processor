@@ -18,6 +18,7 @@ import type {
   ApiKeyStoreResponse,
   ApiKeysStatusResponse,
   Pipeline,
+  UserPreference,
 } from './types';
 
 // ============================================================================
@@ -41,12 +42,14 @@ export async function analyzeDocument(file: File): Promise<AnalyzeResponse> {
 export async function processJob(
   jobId: string,
   pipeline: Pipeline,
-  saveToDb: boolean = true
+  saveToDb: boolean = true,
+  userPreference: UserPreference = 'auto'
 ): Promise<ProcessResponse> {
   const request: ProcessRequest = {
     job_id: jobId,
     pipeline,
     save_to_db: saveToDb,
+    user_preference: userPreference,
   };
   return apiPost<ProcessResponse>('/process', request);
 }
