@@ -201,7 +201,7 @@ function getErrorMessage(error: string): string {
     <!-- Header -->
     <header class="header">
       <div class="container header-content">
-        <div class="logo">
+        <div class="logo clickable" @click="emit('cancel')">
           <img src="../assets/invoicator_logo.png" alt="Invoicator" />
           <span class="logo-text">Invoicator</span>
         </div>
