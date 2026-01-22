@@ -235,6 +235,14 @@ p {
   letter-spacing: -0.03em;
 }
 
+.logo.clickable {
+  cursor: pointer;
+}
+
+.logo.clickable:hover {
+  opacity: 0.7;
+}
+
 /* Hero Section */
 .hero {
   padding: var(--spacing-3xl) 0;

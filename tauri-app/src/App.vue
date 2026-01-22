@@ -95,6 +95,7 @@ function handleInvoiceDetailBack() {
     :invoice-id="selectedInvoiceId"
     @back="handleInvoiceDetailBack"
     @saved="handleInvoiceDetailBack"
+    @home="goHome"
   />
   <FutureImplementation
     v-else
