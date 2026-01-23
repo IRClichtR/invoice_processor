@@ -1,9 +1,18 @@
 <script setup lang="ts">
 import { ref } from 'vue';
+import ProcessingModeToggle from './ProcessingModeToggle.vue';
+import type { ApiKeyStatus } from '../api/types';
+
+const props = defineProps<{
+  apiKeyStatus: ApiKeyStatus | null;
+  processingMode: 'local' | 'cloud';
+}>();
 
 const emit = defineEmits<{
   (e: 'navigate', page: string): void;
   (e: 'files-dropped', files: File[]): void;
+  (e: 'configure-api-key'): void;
+  (e: 'mode-changed', mode: 'local' | 'cloud'): void;
 }>();
 
 const isDragging = ref(false);
@@ -75,6 +84,11 @@ function handleFileInput(e: Event) {
           <span class="logo-text">Invoicator</span>
         </div>
         <div class="header-actions">
+          <ProcessingModeToggle
+            :api-key-status="apiKeyStatus"
+            @configure-api-key="emit('configure-api-key')"
+            @mode-changed="(mode) => emit('mode-changed', mode)"
+          />
           <button class="btn btn-secondary" @click="emit('navigate', 'invoices')">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
@@ -84,7 +98,6 @@ function handleFileInput(e: Event) {
             </svg>
             View Invoices
           </button>
-          <!-- <button class="btn btn-primary">Get Started</button> -->
         </div>
       </div>
     </header>
@@ -92,12 +105,16 @@ function handleFileInput(e: Event) {
     <!-- Hero Section -->
     <section class="hero">
       <div class="container">
-        <span class="tagline">100% Local Processing</span>
+        <span class="tagline">
+          {{ processingMode === 'local' ? '100% Local Processing' : 'Cloud-Enhanced Processing' }}
+        </span>
         <h1>Invoicator</h1>
         <p class="subtitle">
           AI-powered invoice extraction that runs entirely on your machine.
           No cloud, no data leaks, just results.
         </p>
+
+        <!-- Dropzone -->
         <div
           class="dropzone"
           :class="{ 'dropzone-active': isDragging }"

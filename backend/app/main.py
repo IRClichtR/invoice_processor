@@ -5,6 +5,7 @@ from app.db.base import init_db, SessionLocal
 from app.api import invoices, api_keys
 from app.services.model_manager import initialize_models
 from app.services.cleanup_service import CleanupService
+from app.services.api_key_service import ApiKeyService
 from app.services.claude_vision_service import ClaudeVisionService, CLAUDE_API_CONSOLE_URL
 import os
 import structlog
@@ -55,6 +56,23 @@ async def startup_event():
 
     logger.info("Initializing models...")
     initialize_models()
+
+    logger.info("Checking encryption key rotation...")
+    api_key_service = ApiKeyService()
+    db = SessionLocal()
+    try:
+        # Check and perform encryption key rotation if needed
+        if api_key_service.check_and_perform_key_rotation(db):
+            logger.info("Encryption key rotation completed successfully")
+
+        # Migrate env API key to database if not already present
+        logger.info("Checking for API key migration from environment...")
+        if api_key_service.migrate_env_key_to_db(db):
+            logger.info("API key migrated from environment to database")
+    except Exception as e:
+        logger.warning("API key service startup tasks failed", error=str(e))
+    finally:
+        db.close()
 
     logger.info("Checking Anthropic API key...")
     claude_service = ClaudeVisionService()
