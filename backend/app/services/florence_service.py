@@ -351,17 +351,97 @@ class FlorenceService:
         return ''
 
     def _extract_date(self, text: str) -> str:
-        """Extract date"""
-        patterns = [
-            r'(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})',
-            r'(\d{1,2}\s+(?:janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre)\s+\d{4})',
-            r'(\d{4}-\d{2}-\d{2})'
+        """
+        Extract invoice date from text.
+
+        Prioritizes:
+        1. Labeled invoice dates (Date de facture:, Date:, Invoice date:, etc.)
+        2. Dates near the top of the document
+        3. Any date found in the text
+        """
+        # French month names
+        french_months = r'(?:janvier|février|fevrier|mars|avril|mai|juin|juillet|août|aout|septembre|octobre|novembre|décembre|decembre)'
+        # English month names
+        english_months = r'(?:january|february|march|april|may|june|july|august|september|october|november|december)'
+        # Short month names (both languages)
+        short_months = r'(?:jan|fév|fev|feb|mar|avr|apr|mai|may|jun|jui|jul|aoû|aou|aug|sep|sept|oct|nov|déc|dec)'
+
+        all_months = f'(?:{french_months}|{english_months}|{short_months})'
+
+        # Date patterns (more comprehensive)
+        date_patterns = [
+            # DD/MM/YYYY or DD-MM-YYYY or DD.MM.YYYY
+            r'(\d{1,2}[/\-\.]\d{1,2}[/\-\.]\d{2,4})',
+            # YYYY-MM-DD (ISO format)
+            r'(\d{4}[/\-\.]\d{1,2}[/\-\.]\d{1,2})',
+            # DD Month YYYY (e.g., "15 janvier 2024" or "15 January 2024")
+            rf'(\d{{1,2}}\s+{all_months}\.?\s+\d{{4}})',
+            # Month DD, YYYY (e.g., "January 15, 2024")
+            rf'({all_months}\.?\s+\d{{1,2}},?\s+\d{{4}})',
+            # DD Month YY (e.g., "15 jan 24")
+            rf'(\d{{1,2}}\s+{all_months}\.?\s+\d{{2}})',
         ]
-        for pattern in patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
+
+        # Labels that indicate an invoice date (prioritized search)
+        date_labels = [
+            # French labels
+            r'date\s*(?:de\s*)?(?:la\s*)?facture\s*[:\s]*',
+            r"date\s*d.?émission\s*[:\s]*",
+            r'date\s*[:\s]+',
+            r'émise?\s*le\s*[:\s]*',
+            r'le\s*[:\s]*(?=\d)',
+            r'en\s*date\s*du\s*[:\s]*',
+            # English labels
+            r'invoice\s*date\s*[:\s]*',
+            r'date\s*of\s*invoice\s*[:\s]*',
+            r'issue\s*date\s*[:\s]*',
+            r'dated?\s*[:\s]+',
+            r'bill\s*date\s*[:\s]*',
+        ]
+
+        text_lower = text.lower()
+
+        # First, try to find dates near labeled fields
+        for label in date_labels:
+            # Search for label followed by a date pattern
+            for date_pattern in date_patterns:
+                combined_pattern = label + r'\s*' + date_pattern
+                match = re.search(combined_pattern, text_lower, re.IGNORECASE)
+                if match:
+                    # Return the captured date group
+                    date_value = match.group(1) if match.lastindex else match.group(0)
+                    return self._normalize_date(date_value)
+
+        # Second, look in the first 20 lines (header area) for any date
+        lines = text.split('\n')[:20]
+        header_text = '\n'.join(lines)
+
+        for date_pattern in date_patterns:
+            match = re.search(date_pattern, header_text, re.IGNORECASE)
             if match:
-                return match.group(1)[:50]
+                return self._normalize_date(match.group(1))
+
+        # Finally, search the entire document for any date
+        for date_pattern in date_patterns:
+            match = re.search(date_pattern, text, re.IGNORECASE)
+            if match:
+                return self._normalize_date(match.group(1))
+
         return ''
+
+    def _normalize_date(self, date_str: str) -> str:
+        """
+        Normalize a date string to a consistent format.
+        Returns the cleaned date string (max 50 chars).
+        """
+        if not date_str:
+            return ''
+
+        # Clean up the date string
+        date_str = date_str.strip()
+        date_str = re.sub(r'\s+', ' ', date_str)  # Normalize whitespace
+
+        return date_str[:50]
 
     def _extract_total_amount(self, ocr_text: str, words: List[Dict], keywords: list) -> Optional[float]:
         """Extract total amounts - search bottom of document first"""
@@ -415,8 +495,119 @@ class FlorenceService:
 
         return amounts
 
+    def _detect_column_headers(self, words: List[Dict], sorted_lines: List) -> Dict[str, float]:
+        """
+        Detect column headers and their X positions.
+        Returns a dict mapping column type to X position.
+        """
+        # Column header patterns (French and English)
+        column_patterns = {
+            'designation': [
+                r'\bdésignation\b', r'\bdescription\b', r'\blibellé\b', r'\blibelle\b',
+                r'\barticle\b', r'\bproduit\b', r'\bservice\b', r'\bprestation\b',
+                r'\bitem\b', r'\bdetail\b', r'\bdétail\b'
+            ],
+            'quantity': [
+                r'\bquantité\b', r'\bquantite\b', r'\bqté\b', r'\bqte\b', r'\bqty\b',
+                r'\bnombre\b', r'\bnb\b', r'\bquantity\b', r'\bunits?\b'
+            ],
+            'unit_price': [
+                r'\bprix\s*unitaire\b', r'\bp\.?\s*u\.?\b', r'\bpu\b', r'\bprix\s*unit\.?\b',
+                r'\bunit\s*price\b', r'\btarif\b', r'\bprix\b', r'\brate\b',
+                r'\bunitaire\b', r'\bunit\b'
+            ],
+            'total': [
+                r'\btotal\s*h\.?t\.?\b', r'\bmontant\s*h\.?t\.?\b', r'\btotal\b',
+                r'\bmontant\b', r'\bamount\b', r'\bsomme\b', r'\bnet\b'
+            ],
+            'vat': [
+                r'\btva\b', r'\bvat\b', r'\btaxe\b', r'\btax\b'
+            ]
+        }
+
+        column_positions = {}
+
+        # Search in the top portion of the document for header row
+        for y_pos, line_words in sorted_lines:
+            if y_pos > 0.35:  # Headers should be in top 35%
+                break
+
+            line_words_sorted = sorted(line_words, key=lambda w: w['x'])
+            line_text = ' '.join(w['text'] for w in line_words_sorted).lower()
+
+            # Check if this line looks like a header row (multiple column keywords)
+            matches_found = 0
+            for col_type, patterns in column_patterns.items():
+                for pattern in patterns:
+                    if re.search(pattern, line_text, re.IGNORECASE):
+                        matches_found += 1
+                        break
+
+            # If we found at least 2 column keywords, this is likely the header row
+            if matches_found >= 2:
+                for w in line_words_sorted:
+                    word_lower = w['text'].lower()
+                    for col_type, patterns in column_patterns.items():
+                        if col_type not in column_positions:
+                            for pattern in patterns:
+                                if re.search(pattern, word_lower, re.IGNORECASE):
+                                    column_positions[col_type] = w['x']
+                                    break
+
+                # If we found headers, stop searching
+                if len(column_positions) >= 2:
+                    logger.debug("Detected column headers", positions=column_positions)
+                    break
+
+        return column_positions
+
+    def _assign_values_by_columns(
+        self,
+        numbers_with_pos: List[Dict],
+        column_positions: Dict[str, float]
+    ) -> Dict[str, Optional[float]]:
+        """
+        Assign numeric values to columns based on detected header positions.
+        """
+        result = {'quantity': None, 'unit_price': None, 'total_ht': None}
+
+        if not numbers_with_pos:
+            return result
+
+        # If we have column positions, use them
+        if column_positions:
+            tolerance = 0.08  # X position tolerance for matching
+
+            for num in numbers_with_pos:
+                x_pos = num['x']
+                value = num['value']
+
+                # Find the closest column header
+                best_match = None
+                best_distance = float('inf')
+
+                for col_type in ['quantity', 'unit_price', 'total']:
+                    if col_type in column_positions:
+                        distance = abs(x_pos - column_positions[col_type])
+                        if distance < best_distance and distance < tolerance:
+                            best_distance = distance
+                            best_match = col_type
+
+                if best_match:
+                    key = 'total_ht' if best_match == 'total' else best_match
+                    if result[key] is None:  # Don't overwrite
+                        result[key] = value
+
+        # Fallback: if columns weren't detected or didn't match all values
+        if result['total_ht'] is None and numbers_with_pos:
+            # Total is usually the rightmost and largest value
+            numbers_with_pos_sorted = sorted(numbers_with_pos, key=lambda n: n['x'])
+            result['total_ht'] = numbers_with_pos_sorted[-1]['value']
+
+        return result
+
     def _extract_line_items_improved(self, words: List[Dict]) -> List[Dict]:
-        """Extract line items using spatial analysis with column detection"""
+        """Extract line items using spatial analysis with column header detection"""
         if not words:
             return []
 
@@ -435,30 +626,18 @@ class FlorenceService:
         # Sort lines by Y
         sorted_lines = sorted(lines_dict.items(), key=lambda x: x[0])
 
+        # Detect column headers first
+        column_positions = self._detect_column_headers(words, sorted_lines)
+
         # Skip patterns - more comprehensive
         skip_patterns = [
-            r'(facture|invoice|total|tva|vat|client|adresse|siret|siren|iban|bic|page|n°|date|désignation|quantité|prix|montant|référence|code postal|cedex|tel|fax|email|www\.|http|titulaire|banque|swift|rib|compte|paiement|règlement|conditions|acompte|solde|avoir|escompte|pénalité|retard)',
+            r'(facture|invoice|total\s+h\.?t|total\s+t\.?t\.?c|tva|vat|client|adresse|siret|siren|iban|bic|page|n°|date|désignation|quantité|prix|montant|référence|code postal|cedex|tel|fax|email|www\.|http|titulaire|banque|swift|rib|compte|paiement|règlement|conditions|acompte|solde|avoir|escompte|pénalité|retard)',
             r'^\d+$',  # Just numbers (like postal codes)
             r'^[A-Z]{2}\d+',  # SIRET-like patterns
             r'^\d+\s*€?$',  # Just an amount
             r'^FR\d{2}',  # IBAN starting with FR
             r'^\d{5}\s+\w+',  # Postal code + city
         ]
-
-        # Detect columns by analyzing X positions of numbers
-        number_x_positions = []
-        for y_pos, line_words in sorted_lines:
-            for w in line_words:
-                if re.match(r'^\d+[.,]?\d*$', w['text']):
-                    number_x_positions.append(w['x'])
-
-        # Find column boundaries (cluster X positions)
-        if number_x_positions:
-            number_x_positions.sort()
-            # Typical invoice has qty around 0.5-0.6, price around 0.7, total around 0.85
-            qty_x_min = 0.45
-            price_x_min = 0.60
-            total_x_min = 0.75
 
         for y_pos, line_words in sorted_lines:
             # Skip lines in header (top 20%) or footer (bottom 15%)
@@ -487,6 +666,11 @@ class FlorenceService:
             designation_words = []
             numbers_with_pos = []
 
+            # Determine designation boundary (use column position if available)
+            designation_x_max = column_positions.get('designation', 0.0) + 0.25
+            if designation_x_max < 0.30:
+                designation_x_max = 0.50  # Default fallback
+
             for w in line_words:
                 text = w['text'].strip()
                 # Check if it's a number (allowing comma/dot for decimals)
@@ -496,7 +680,7 @@ class FlorenceService:
                         'x': w['x'],
                         'text': text
                     })
-                elif w['x'] < 0.50:  # Designation is usually on the left half
+                elif w['x'] < designation_x_max:
                     # Skip currency symbols and percentage
                     if text not in ['€', '$', '%', '|', ')', '(']:
                         designation_words.append(text)
@@ -513,54 +697,87 @@ class FlorenceService:
 
             # Skip if designation looks like metadata
             if any(kw in designation.lower() for kw in ['broderie', 'taille', 'couleur', 'page']):
-                # This might be a variant line - try to merge with previous item
                 continue
 
             if len(designation) < 3:
                 continue
 
-            # Assign numbers to columns based on X position
-            qty = None
-            unit_price = None
-            total_ht = None
+            # Assign numbers to columns using detected header positions
+            values = self._assign_values_by_columns(numbers_with_pos, column_positions)
+            qty = values['quantity']
+            unit_price = values['unit_price']
+            total_ht = values['total_ht']
 
-            # Sort numbers by X position
-            numbers_with_pos.sort(key=lambda n: n['x'])
+            # If column detection didn't work well, fall back to heuristics
+            if not column_positions or (total_ht and not qty and not unit_price):
+                numbers_with_pos.sort(key=lambda n: n['x'])
 
-            if len(numbers_with_pos) >= 3:
-                qty = numbers_with_pos[0]['value']
-                unit_price = numbers_with_pos[1]['value']
-                total_ht = numbers_with_pos[-1]['value']
-            elif len(numbers_with_pos) == 2:
-                # Could be qty + total or price + total
-                n1, n2 = numbers_with_pos[0]['value'], numbers_with_pos[1]['value']
-                if n1 and n2 and n1 < 100 and n2 > n1:
-                    qty = n1
-                    total_ht = n2
-                    if qty > 0:
-                        unit_price = round(n2 / n1, 2)
-                else:
-                    unit_price = n1
-                    total_ht = n2
+                if len(numbers_with_pos) >= 3:
+                    # Use mathematical validation to determine correct order
+                    n1, n2, n3 = [n['value'] for n in numbers_with_pos[:3]]
 
-            # Always validate and correct values using total_ht as reference
-            if unit_price and total_ht and unit_price > 0:
-                # Calculate expected quantity from total / unit_price
-                calculated_qty = total_ht / unit_price
+                    # Try qty, price, total order
+                    if n1 and n2 and n3 and abs(n1 * n2 - n3) < 1.0:
+                        qty, unit_price, total_ht = n1, n2, n3
+                    # Try price, qty, total order
+                    elif n1 and n2 and n3 and abs(n2 * n1 - n3) < 1.0:
+                        unit_price, qty, total_ht = n1, n2, n3
+                    else:
+                        # Default: assume rightmost is total, then work backwards
+                        total_ht = numbers_with_pos[-1]['value']
+                        # The smaller non-total value is likely quantity
+                        remaining = [n['value'] for n in numbers_with_pos[:-1] if n['value']]
+                        if len(remaining) >= 2:
+                            if remaining[0] < remaining[1]:
+                                qty, unit_price = remaining[0], remaining[1]
+                            else:
+                                unit_price, qty = remaining[0], remaining[1]
+                        elif len(remaining) == 1:
+                            # Only one other number - determine if it's qty or price
+                            if remaining[0] < 100 and total_ht and remaining[0] < total_ht:
+                                qty = remaining[0]
+                            else:
+                                unit_price = remaining[0]
 
-                # Round to nearest integer if close
-                if abs(calculated_qty - round(calculated_qty)) < 0.1:
-                    calculated_qty = round(calculated_qty)
-                else:
-                    calculated_qty = round(calculated_qty, 2)
+                elif len(numbers_with_pos) == 2:
+                    n1, n2 = numbers_with_pos[0]['value'], numbers_with_pos[1]['value']
+                    if n1 and n2:
+                        # Larger value is likely total
+                        if n2 > n1:
+                            total_ht = n2
+                            if n1 < 100:  # Small number likely quantity
+                                qty = n1
+                            else:
+                                unit_price = n1
+                        else:
+                            total_ht = n1
+                            if n2 < 100:
+                                qty = n2
+                            else:
+                                unit_price = n2
 
-                # Use calculated qty if we don't have one or if current doesn't match
-                if not qty or (qty and abs(qty * unit_price - total_ht) > 1.0):
-                    qty = calculated_qty
+            # Validate and correct using mathematical relationship: qty * unit_price = total
+            if total_ht and total_ht > 0:
+                if qty and unit_price:
+                    # Check if the math works out
+                    expected_total = qty * unit_price
+                    if abs(expected_total - total_ht) > 1.0:
+                        # Values might be swapped, try the other way
+                        if abs(unit_price * qty - total_ht) < 1.0:
+                            pass  # Already correct
+                        elif qty > 0 and abs(total_ht / qty - unit_price) > 1.0:
+                            # Recalculate unit_price from total/qty
+                            unit_price = round(total_ht / qty, 2)
 
-            # If we have qty and total but no unit_price, calculate it
-            elif qty and total_ht and qty > 0 and not unit_price:
-                unit_price = round(total_ht / qty, 2)
+                elif qty and qty > 0 and not unit_price:
+                    unit_price = round(total_ht / qty, 2)
+
+                elif unit_price and unit_price > 0 and not qty:
+                    calculated_qty = total_ht / unit_price
+                    if abs(calculated_qty - round(calculated_qty)) < 0.1:
+                        qty = round(calculated_qty)
+                    else:
+                        qty = round(calculated_qty, 2)
 
             if designation and total_ht and total_ht > 0:
                 item = {
