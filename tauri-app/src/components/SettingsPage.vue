@@ -2,7 +2,9 @@
 import { ref, onMounted, computed } from 'vue';
 import { getApiKeysStatus, storeApiKey, deleteApiKey } from '../api';
 import type { ApiKeyStatus } from '../api/types';
+import { logger } from '../utils/logger';
 
+const MODULE = 'SettingsPage';
 const PREFERENCE_KEY = 'invoicator_processing_mode';
 
 const props = defineProps<{
@@ -31,19 +33,26 @@ const isCloudEnabled = computed(() => {
 });
 
 onMounted(async () => {
+  logger.debug(MODULE, 'Component mounted, loading API key status');
   await loadApiKeyStatus();
 });
 
 async function loadApiKeyStatus() {
   isLoading.value = true;
   errorMessage.value = null;
+  logger.debug(MODULE, 'Loading API key status...');
 
   try {
-    const status = await getApiKeysStatus();
+    const status = await logger.trace(MODULE, 'Fetch API key status', () => getApiKeysStatus());
     anthropicStatus.value = status.anthropic;
     consoleUrl.value = status.console_url || 'https://console.anthropic.com';
+    logger.state(MODULE, 'API key status loaded', {
+      configured: status.anthropic?.configured,
+      valid: status.anthropic?.valid,
+      source: status.anthropic?.source
+    });
   } catch (error) {
-    console.error('Failed to load API key status:', error);
+    logger.error(MODULE, 'Failed to load API key status', error);
     errorMessage.value = 'Failed to load API key status';
   } finally {
     isLoading.value = false;
@@ -52,26 +61,32 @@ async function loadApiKeyStatus() {
 
 async function handleSaveApiKey() {
   if (!apiKeyInput.value.trim()) {
+    logger.warn(MODULE, 'Save API key blocked - empty input');
     errorMessage.value = 'Please enter an API key';
     return;
   }
 
+  logger.action(MODULE, 'Save API key initiated', { keyPrefix: apiKeyInput.value.trim().substring(0, 10) + '...' });
   isSaving.value = true;
   errorMessage.value = null;
   successMessage.value = null;
 
   try {
-    const result = await storeApiKey('anthropic', apiKeyInput.value.trim(), true);
+    const result = await logger.trace(MODULE, 'Store and validate API key', () =>
+      storeApiKey('anthropic', apiKeyInput.value.trim(), true)
+    );
 
     if (result.valid) {
+      logger.info(MODULE, 'API key saved successfully', { valid: true });
       successMessage.value = 'API key saved and validated successfully!';
       apiKeyInput.value = '';
       await loadApiKeyStatus();
     } else {
+      logger.warn(MODULE, 'API key validation failed', { error: result.error });
       errorMessage.value = result.error || 'API key validation failed';
     }
   } catch (error: any) {
-    console.error('Failed to save API key:', error);
+    logger.error(MODULE, 'Failed to save API key', error);
     errorMessage.value = error.detail || 'Failed to save API key';
   } finally {
     isSaving.value = false;
@@ -79,25 +94,30 @@ async function handleSaveApiKey() {
 }
 
 async function handleDeleteApiKey() {
+  logger.action(MODULE, 'Delete API key requested');
   if (!confirm('Are you sure you want to remove the API key?')) {
+    logger.debug(MODULE, 'Delete API key cancelled by user');
     return;
   }
 
+  logger.action(MODULE, 'Delete API key confirmed');
   isDeleting.value = true;
   errorMessage.value = null;
   successMessage.value = null;
 
   try {
-    await deleteApiKey('anthropic');
+    await logger.trace(MODULE, 'Delete API key', () => deleteApiKey('anthropic'));
+    logger.info(MODULE, 'API key deleted successfully');
     successMessage.value = 'API key removed successfully';
     await loadApiKeyStatus();
 
     // If removing API key while in cloud mode, switch to local
     if (currentMode.value === 'cloud') {
+      logger.state(MODULE, 'Switching to local mode after API key deletion');
       setMode('local');
     }
   } catch (error: any) {
-    console.error('Failed to delete API key:', error);
+    logger.error(MODULE, 'Failed to delete API key', error);
     errorMessage.value = error.detail || 'Failed to remove API key';
   } finally {
     isDeleting.value = false;
@@ -105,12 +125,15 @@ async function handleDeleteApiKey() {
 }
 
 function setMode(mode: 'local' | 'cloud') {
+  const previousMode = currentMode.value;
   if (mode === 'cloud' && !isCloudEnabled.value) {
+    logger.warn(MODULE, 'Set cloud mode blocked - no valid API key', { requestedMode: mode });
     errorMessage.value = 'Please configure and validate an API key to enable Cloud mode';
     return;
   }
   currentMode.value = mode;
   localStorage.setItem(PREFERENCE_KEY, mode);
+  logger.action(MODULE, 'Processing mode changed', { from: previousMode, to: mode });
   emit('mode-changed', mode);
 }
 </script>

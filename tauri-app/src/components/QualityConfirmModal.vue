@@ -1,5 +1,8 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, watch } from 'vue';
+import { logger } from '../utils/logger';
+
+const MODULE = 'QualityConfirmModal';
 
 const props = defineProps<{
   visible: boolean;
@@ -15,6 +18,17 @@ const emit = defineEmits<{
   (e: 'cancel'): void;
 }>();
 
+// Log when modal becomes visible
+watch(() => props.visible, (newVisible) => {
+  if (newVisible) {
+    logger.info(MODULE, 'Modal opened', {
+      documentName: props.documentName,
+      qualityScore: props.qualityScore,
+      hasValidApiKey: props.hasValidApiKey
+    });
+  }
+});
+
 const qualityLabel = computed(() => {
   if (!props.qualityScore) return 'Low';
   if (props.qualityScore >= 0.8) return 'Good';
@@ -27,18 +41,33 @@ const qualityPercentage = computed(() => {
   return Math.round(props.qualityScore * 100);
 });
 
+function handleContinueLocal() {
+  logger.action(MODULE, 'User selected: Continue with Local AI', {
+    documentName: props.documentName,
+    qualityScore: props.qualityScore
+  });
+  emit('continue-local');
+}
+
 function handleUseCloud() {
   if (props.hasValidApiKey) {
+    logger.action(MODULE, 'User selected: Use Cloud AI', { documentName: props.documentName });
     emit('use-cloud');
   } else {
+    logger.action(MODULE, 'User selected: Configure API Key (cloud unavailable)', { documentName: props.documentName });
     emit('configure-api-key');
   }
+}
+
+function handleCancel() {
+  logger.action(MODULE, 'User cancelled quality confirmation', { documentName: props.documentName });
+  emit('cancel');
 }
 </script>
 
 <template>
   <Teleport to="body">
-    <div v-if="visible" class="modal-overlay" @click.self="emit('cancel')">
+    <div v-if="visible" class="modal-overlay" @click.self="handleCancel">
       <div class="modal-container">
         <!-- Modal Header -->
         <div class="modal-header">
@@ -103,10 +132,10 @@ function handleUseCloud() {
 
         <!-- Modal Footer -->
         <div class="modal-footer">
-          <button class="btn btn-secondary" @click="emit('cancel')">
+          <button class="btn btn-secondary" @click="handleCancel">
             Cancel
           </button>
-          <button class="btn btn-secondary" @click="emit('continue-local')">
+          <button class="btn btn-secondary" @click="handleContinueLocal">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
               <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>

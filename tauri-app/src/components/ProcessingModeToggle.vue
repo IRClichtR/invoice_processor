@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue';
 import type { ApiKeyStatus } from '../api/types';
+import { logger } from '../utils/logger';
 
+const MODULE = 'ProcessingModeToggle';
 const PREFERENCE_KEY = 'invoicator_processing_mode';
 
 const props = defineProps<{
@@ -20,17 +22,22 @@ onMounted(() => {
   const savedMode = localStorage.getItem(PREFERENCE_KEY);
   if (savedMode === 'local' || savedMode === 'cloud') {
     currentMode.value = savedMode;
+    logger.debug(MODULE, 'Restored mode from localStorage', { mode: savedMode });
   } else if (props.apiKeyStatus?.valid) {
-    // Default to cloud if API key is valid
     currentMode.value = 'cloud';
+    logger.debug(MODULE, 'Defaulted to cloud mode (valid API key)');
+  } else {
+    logger.debug(MODULE, 'Defaulted to local mode');
   }
 });
 
 // Watch for API key status changes
-watch(() => props.apiKeyStatus, (newStatus) => {
-  // If API key becomes invalid/missing while in cloud mode, switch to local
+watch(() => props.apiKeyStatus, (newStatus, oldStatus) => {
   if (currentMode.value === 'cloud' && (!newStatus?.configured || !newStatus?.valid)) {
-    // Don't auto-switch, just leave as is - user will see the warning
+    logger.warn(MODULE, 'API key invalidated while in cloud mode', {
+      configured: newStatus?.configured,
+      valid: newStatus?.valid
+    });
   }
 });
 
@@ -39,10 +46,12 @@ const isCloudEnabled = computed(() => {
 });
 
 function toggleMode() {
+  const previousMode = currentMode.value;
+
   if (currentMode.value === 'local') {
     // Switching to cloud
     if (!isCloudEnabled.value) {
-      // Need to configure API key first
+      logger.action(MODULE, 'Toggle blocked - API key not configured', { currentMode: 'local' });
       emit('configure-api-key');
       return;
     }
@@ -52,16 +61,20 @@ function toggleMode() {
     currentMode.value = 'local';
   }
 
+  logger.action(MODULE, 'Mode toggled', { from: previousMode, to: currentMode.value });
   localStorage.setItem(PREFERENCE_KEY, currentMode.value);
   emit('mode-changed', currentMode.value);
 }
 
 function setMode(mode: 'local' | 'cloud') {
   if (mode === 'cloud' && !isCloudEnabled.value) {
+    logger.action(MODULE, 'Set mode blocked - API key not configured', { requestedMode: mode });
     emit('configure-api-key');
     return;
   }
+  const previousMode = currentMode.value;
   currentMode.value = mode;
+  logger.action(MODULE, 'Mode set explicitly', { from: previousMode, to: mode });
   localStorage.setItem(PREFERENCE_KEY, currentMode.value);
   emit('mode-changed', currentMode.value);
 }

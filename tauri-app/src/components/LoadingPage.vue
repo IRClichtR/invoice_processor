@@ -3,6 +3,9 @@ import { ref, computed, watch } from 'vue';
 import { analyzeDocument, processJob, type FileProcessingResult, type AnalyzeResponse, type ProcessResponse, type Pipeline, type UserPreference } from '../api';
 import QualityConfirmModal from './QualityConfirmModal.vue';
 import type { ApiKeyStatus } from '../api/types';
+import { logger } from '../utils/logger';
+
+const MODULE = 'LoadingPage';
 
 interface ProcessingFile {
   name: string;
@@ -61,7 +64,7 @@ const errorCount = computed(() =>
 );
 
 const hasValidApiKey = computed(() => {
-  return props.apiKeyStatus?.configured && props.apiKeyStatus?.valid;
+  return !!(props.apiKeyStatus?.configured && props.apiKeyStatus?.valid);
 });
 
 const userPreference = computed<UserPreference>(() => {
@@ -71,6 +74,10 @@ const userPreference = computed<UserPreference>(() => {
 // Initialize files when props change
 watch(() => props.files, (newFiles) => {
   if (newFiles && newFiles.length > 0) {
+    logger.info(MODULE, 'Files received for processing', {
+      count: newFiles.length,
+      files: newFiles.map(f => f.name)
+    });
     processingFiles.value = newFiles.map(file => ({
       name: file.name,
       file,
@@ -83,10 +90,17 @@ watch(() => props.files, (newFiles) => {
 
 async function startProcessing() {
   if (!props.files || props.files.length === 0) {
+    logger.warn(MODULE, 'No files to process');
     status.value = 'error';
     errorMessage.value = 'No files to process';
     return;
   }
+
+  logger.info(MODULE, 'Starting processing workflow', {
+    fileCount: props.files.length,
+    processingMode: props.processingMode,
+    userPreference: userPreference.value
+  });
 
   status.value = 'processing';
   isCancelled.value = false;
@@ -96,9 +110,16 @@ async function startProcessing() {
   try {
     // Process files sequentially
     for (let i = 0; i < processingFiles.value.length; i++) {
-      if (isCancelled.value) break;
+      if (isCancelled.value) {
+        logger.info(MODULE, 'Processing cancelled by user', { processedCount: i });
+        break;
+      }
 
       const pf = processingFiles.value[i];
+      logger.info(MODULE, `Processing file ${i + 1}/${processingFiles.value.length}`, {
+        filename: pf.name,
+        fileSize: pf.file.size
+      });
 
       // Step 1: Analyze
       pf.status = 'analyzing';
@@ -106,24 +127,49 @@ async function startProcessing() {
       currentStep.value = 1;
 
       try {
-        const analysis = await analyzeDocument(pf.file);
+        logger.debug(MODULE, 'Step 1: Analyzing document', { filename: pf.name });
+        const analysis = await logger.trace(MODULE, `Analyze ${pf.name}`, () => analyzeDocument(pf.file));
         pf.analysis = analysis;
         pf.progress = 50;
+
+        logger.info(MODULE, 'Document analysis complete', {
+          filename: pf.name,
+          jobId: analysis.job_id,
+          suggestedPipeline: analysis.suggested_pipeline,
+          confidenceScore: analysis.confidence_score,
+          isHandwritten: analysis.is_handwritten
+        });
 
         if (isCancelled.value) break;
 
         // Step 2: Process with suggested pipeline
+        // Send the suggested pipeline along with user preference
+        // Backend will return requires_confirmation if user wants local but doc needs cloud
         pf.status = 'processing';
         currentStep.value = 2;
 
         const pipeline: Pipeline = analysis.suggested_pipeline;
 
-        // If user wants local but suggested pipeline is claude (low quality),
-        // we need to check user preference
-        const result = await processJob(analysis.job_id, pipeline, true, userPreference.value);
+        logger.debug(MODULE, 'Step 2: Processing with pipeline', {
+          filename: pf.name,
+          pipeline,
+          userMode: props.processingMode,
+          userPreference: userPreference.value
+        });
+
+        const result = await logger.trace(
+          MODULE,
+          `Process ${pf.name}`,
+          () => processJob(analysis.job_id, pipeline, true, userPreference.value)
+        );
 
         // Check if confirmation is needed
         if (result.requires_confirmation) {
+          logger.info(MODULE, 'Quality confirmation required', {
+            filename: pf.name,
+            warning: result.warning,
+            suggestedPipeline: result.suggested_pipeline
+          });
           pf.status = 'awaiting_confirmation';
           pf.result = result;
           pendingConfirmationFile.value = pf;
@@ -131,16 +177,25 @@ async function startProcessing() {
           isProcessingPaused.value = true;
 
           // Wait for user decision
+          logger.debug(MODULE, 'Waiting for user confirmation...', { filename: pf.name });
           await waitForConfirmation();
 
           // After confirmation, check if cancelled
           if (isCancelled.value) break;
 
-          // If user continued, the file status should be updated
-          if (pf.status === 'error') continue;
+          // If user continued, the file status should be updated (status can be changed by handlers)
+          if ((pf.status as string) === 'error') {
+            logger.warn(MODULE, 'File marked as error after confirmation', { filename: pf.name });
+            continue;
+          }
         } else {
           pf.result = result;
           pf.progress = 90;
+          logger.debug(MODULE, 'Processing result received', {
+            filename: pf.name,
+            success: result.success,
+            processingMethod: result.processing_method
+          });
         }
 
         if (isCancelled.value) break;
@@ -151,14 +206,24 @@ async function startProcessing() {
 
         if (pf.result?.success) {
           pf.status = 'completed';
-        } else if (pf.status !== 'error') {
+          logger.info(MODULE, 'File processing completed successfully', {
+            filename: pf.name,
+            invoiceId: pf.result.invoice_id,
+            processingMethod: pf.result.processing_method
+          });
+        } else if ((pf.status as string) !== 'error') {
           pf.status = 'error';
           pf.error = pf.result?.error || 'Processing error';
+          logger.error(MODULE, 'File processing failed', null, {
+            filename: pf.name,
+            error: pf.error
+          });
         }
       } catch (error) {
         pf.status = 'error';
         pf.error = error instanceof Error ? error.message : 'Unknown error';
         pf.progress = 100;
+        logger.error(MODULE, 'Exception during file processing', error, { filename: pf.name });
       }
     }
 
@@ -167,18 +232,26 @@ async function startProcessing() {
       const hasErrors = processingFiles.value.some(f => f.status === 'error');
       const allErrors = processingFiles.value.every(f => f.status === 'error');
 
+      const summary = {
+        total: processingFiles.value.length,
+        completed: completedCount.value,
+        errors: errorCount.value
+      };
+
       if (allErrors) {
         status.value = 'error';
-        // Get the first error to show as the main message
         const firstError = processingFiles.value.find(f => f.error)?.error;
         errorMessage.value = firstError ? getErrorMessage(firstError) : 'All files failed to process';
+        logger.error(MODULE, 'All files failed to process', null, summary);
       } else {
         status.value = 'success';
+        logger.info(MODULE, 'Processing workflow completed', summary);
       }
     }
   } catch (error) {
     status.value = 'error';
     errorMessage.value = error instanceof Error ? error.message : 'Processing error';
+    logger.error(MODULE, 'Processing workflow failed with exception', error);
     emit('error', errorMessage.value);
   }
 }
@@ -198,27 +271,38 @@ async function handleContinueLocal() {
   if (!pendingConfirmationFile.value) return;
 
   const pf = pendingConfirmationFile.value;
+  logger.action(MODULE, 'User chose to continue with local processing', {
+    filename: pf.name,
+    jobId: pf.analysis?.job_id
+  });
   showQualityModal.value = false;
 
   // Continue processing with florence pipeline (local)
   pf.status = 'processing';
   try {
-    const result = await processJob(pf.analysis!.job_id, 'florence', true, 'auto');
+    const result = await logger.trace(
+      MODULE,
+      `Process locally: ${pf.name}`,
+      () => processJob(pf.analysis!.job_id, 'florence', true, 'auto')
+    );
     pf.result = result;
     pf.progress = 90;
 
     if (result.success) {
       pf.status = 'completed';
       pf.progress = 100;
+      logger.info(MODULE, 'Local processing completed successfully', { filename: pf.name });
     } else {
       pf.status = 'error';
       pf.error = result.error || 'Processing error';
       pf.progress = 100;
+      logger.warn(MODULE, 'Local processing failed', { filename: pf.name, error: pf.error });
     }
   } catch (error) {
     pf.status = 'error';
     pf.error = error instanceof Error ? error.message : 'Unknown error';
     pf.progress = 100;
+    logger.error(MODULE, 'Exception during local processing', error, { filename: pf.name });
   }
 
   pendingConfirmationFile.value = null;
@@ -229,32 +313,44 @@ async function handleUseCloud() {
   if (!pendingConfirmationFile.value) return;
 
   const pf = pendingConfirmationFile.value;
+  logger.action(MODULE, 'User chose to use cloud processing', {
+    filename: pf.name,
+    jobId: pf.analysis?.job_id
+  });
   showQualityModal.value = false;
 
   // Process with claude pipeline
   pf.status = 'processing';
   try {
-    const result = await processJob(pf.analysis!.job_id, 'claude', true, 'cloud');
+    const result = await logger.trace(
+      MODULE,
+      `Process with Claude: ${pf.name}`,
+      () => processJob(pf.analysis!.job_id, 'claude', true, 'cloud')
+    );
     pf.result = result;
     pf.progress = 90;
 
     if (result.success) {
       pf.status = 'completed';
       pf.progress = 100;
+      logger.info(MODULE, 'Cloud processing completed successfully', { filename: pf.name });
     } else if (result.requires_api_key) {
       // Need to configure API key
       pf.status = 'error';
       pf.error = 'API key required';
       pf.progress = 100;
+      logger.warn(MODULE, 'Cloud processing requires API key', { filename: pf.name });
     } else {
       pf.status = 'error';
       pf.error = result.error || 'Processing error';
       pf.progress = 100;
+      logger.warn(MODULE, 'Cloud processing failed', { filename: pf.name, error: pf.error });
     }
   } catch (error) {
     pf.status = 'error';
     pf.error = error instanceof Error ? error.message : 'Unknown error';
     pf.progress = 100;
+    logger.error(MODULE, 'Exception during cloud processing', error, { filename: pf.name });
   }
 
   pendingConfirmationFile.value = null;
@@ -262,6 +358,7 @@ async function handleUseCloud() {
 }
 
 function handleConfigureApiKey() {
+  logger.action(MODULE, 'User chose to configure API key from modal');
   if (pendingConfirmationFile.value) {
     pendingConfirmationFile.value.status = 'error';
     pendingConfirmationFile.value.error = 'Waiting for API key configuration';
@@ -274,6 +371,9 @@ function handleConfigureApiKey() {
 }
 
 function handleModalCancel() {
+  logger.action(MODULE, 'User cancelled quality confirmation modal', {
+    filename: pendingConfirmationFile.value?.name
+  });
   if (pendingConfirmationFile.value) {
     pendingConfirmationFile.value.status = 'error';
     pendingConfirmationFile.value.error = 'Processing cancelled by user';
@@ -285,7 +385,6 @@ function handleModalCancel() {
 }
 
 function handleComplete() {
-  // Build results from processing files
   const results: FileProcessingResult[] = processingFiles.value.map(pf => ({
     filename: pf.name,
     success: pf.status === 'completed' && pf.result?.success === true,
@@ -293,10 +392,15 @@ function handleComplete() {
     processing: pf.result || null,
     error: pf.error || null,
   }));
+  logger.action(MODULE, 'User confirmed results, completing workflow', {
+    totalResults: results.length,
+    successCount: results.filter(r => r.success).length
+  });
   emit('complete', results);
 }
 
 function handleCancel() {
+  logger.action(MODULE, 'User cancelled processing');
   isCancelled.value = true;
   showQualityModal.value = false;
   isProcessingPaused.value = false;
@@ -304,6 +408,9 @@ function handleCancel() {
 }
 
 function handleRetry() {
+  logger.action(MODULE, 'User requested retry', {
+    fileCount: processingFiles.value.length
+  });
   processingFiles.value.forEach(f => {
     f.status = 'pending';
     f.progress = 0;

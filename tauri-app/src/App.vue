@@ -7,9 +7,11 @@ import InvoicesListPage from "./components/InvoicesListPage.vue";
 import InvoiceDetailPage from "./components/InvoiceDetailPage.vue";
 import LoadingPage from "./components/LoadingPage.vue";
 import SettingsPage from "./components/SettingsPage.vue";
-import ProcessingModeToggle from "./components/ProcessingModeToggle.vue";
 import { getApiKeysStatus } from "./api";
 import type { FileProcessingResult, ApiKeyStatus } from "./api";
+import { logger } from "./utils/logger";
+
+const MODULE = 'App';
 
 const currentPage = ref<'home' | 'csv' | 'interrogate' | 'review' | 'invoices' | 'invoice-detail' | 'loading' | 'settings'>('home');
 const droppedFiles = ref<File[]>([]);
@@ -30,89 +32,114 @@ provide('processingMode', processingMode);
 
 // Load API key status on mount
 onMounted(async () => {
+  logger.info(MODULE, 'Application mounted, initializing...');
   try {
-    const status = await getApiKeysStatus();
+    const status = await logger.trace(MODULE, 'Load API key status', () => getApiKeysStatus());
     apiKeyStatus.value = status.anthropic;
+    logger.state(MODULE, 'API key status loaded', {
+      configured: status.anthropic?.configured,
+      valid: status.anthropic?.valid,
+      status: status.anthropic?.status
+    });
 
     // Initialize processing mode from localStorage
     const savedMode = localStorage.getItem('invoicator_processing_mode');
     if (savedMode === 'local' || savedMode === 'cloud') {
       processingMode.value = savedMode;
+      logger.state(MODULE, 'Processing mode restored from localStorage', { mode: savedMode });
     } else if (status.anthropic?.valid) {
       processingMode.value = 'cloud';
+      logger.state(MODULE, 'Processing mode defaulted to cloud (valid API key)', { mode: 'cloud' });
+    } else {
+      logger.state(MODULE, 'Processing mode defaulted to local', { mode: 'local' });
     }
   } catch (error) {
-    console.error('Failed to load API key status:', error);
+    logger.error(MODULE, 'Failed to load API key status', error);
   }
 });
 
 async function refreshApiKeyStatus() {
+  logger.debug(MODULE, 'Refreshing API key status...');
   try {
     const status = await getApiKeysStatus();
     apiKeyStatus.value = status.anthropic;
+    logger.state(MODULE, 'API key status refreshed', {
+      configured: status.anthropic?.configured,
+      valid: status.anthropic?.valid
+    });
   } catch (error) {
-    console.error('Failed to refresh API key status:', error);
+    logger.error(MODULE, 'Failed to refresh API key status', error);
   }
 }
 
 function navigate(page: string) {
+  logger.action(MODULE, 'Navigate', { from: currentPage.value, to: page });
   currentPage.value = page as 'home' | 'csv' | 'interrogate' | 'review' | 'invoices' | 'invoice-detail' | 'loading';
 }
 
 function goHome() {
+  logger.action(MODULE, 'Go home', { previousPage: currentPage.value });
   droppedFiles.value = [];
   processingResults.value = [];
   currentPage.value = 'home';
 }
 
 function handleFilesDropped(files: File[]) {
-  // Store files and navigate to loading page
+  const fileInfo = files.map(f => ({ name: f.name, size: f.size, type: f.type }));
+  logger.action(MODULE, 'Files dropped', { count: files.length, files: fileInfo });
   droppedFiles.value = files;
   processingResults.value = [];
-  console.log('Files dropped:', files.map(f => f.name));
   currentPage.value = 'loading';
 }
 
 function handleProcessingComplete(results: FileProcessingResult[]) {
-  // Store results and navigate to review page
-  console.log('Processing complete:', results);
+  const summary = {
+    total: results.length,
+    successful: results.filter(r => r.success).length,
+    failed: results.filter(r => !r.success).length
+  };
+  logger.info(MODULE, 'Processing complete', summary);
   processingResults.value = results;
   currentPage.value = 'review';
 }
 
 function handleProcessingError(message: string) {
-  console.error('Processing error:', message);
+  logger.error(MODULE, 'Processing error', null, { message });
   // Stay on loading page to show error state
 }
 
 function handleDataConfirmed() {
-  // Data is already saved during processing, just navigate to list
-  console.log('Data confirmed, navigating to invoices list');
+  logger.action(MODULE, 'Data confirmed', { resultsCount: processingResults.value.length });
   droppedFiles.value = [];
   processingResults.value = [];
   currentPage.value = 'invoices';
 }
 
 function handleViewInvoice(id: number) {
+  logger.action(MODULE, 'View invoice', { invoiceId: id });
   selectedInvoiceId.value = id;
   currentPage.value = 'invoice-detail';
 }
 
 function handleInvoiceDetailBack() {
+  logger.action(MODULE, 'Invoice detail back');
   selectedInvoiceId.value = null;
   currentPage.value = 'invoices';
 }
 
 function handleConfigureApiKey() {
+  logger.action(MODULE, 'Configure API key requested');
   currentPage.value = 'settings';
 }
 
 function handleSettingsBack() {
+  logger.action(MODULE, 'Settings back');
   refreshApiKeyStatus();
   goHome();
 }
 
 function handleModeChanged(mode: 'local' | 'cloud') {
+  logger.state(MODULE, 'Processing mode changed', { previousMode: processingMode.value, newMode: mode });
   processingMode.value = mode;
 }
 </script>
@@ -125,6 +152,7 @@ function handleModeChanged(mode: 'local' | 'cloud') {
     @navigate="navigate"
     @files-dropped="handleFilesDropped"
     @configure-api-key="handleConfigureApiKey"
+    @mode-changed="handleModeChanged"
   />
   <LoadingPage
     v-else-if="currentPage === 'loading'"

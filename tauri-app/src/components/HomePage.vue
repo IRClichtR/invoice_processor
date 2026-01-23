@@ -12,6 +12,7 @@ const emit = defineEmits<{
   (e: 'navigate', page: string): void;
   (e: 'files-dropped', files: File[]): void;
   (e: 'configure-api-key'): void;
+  (e: 'mode-changed', mode: 'local' | 'cloud'): void;
 }>();
 
 const isDragging = ref(false);
@@ -86,6 +87,7 @@ function handleFileInput(e: Event) {
           <ProcessingModeToggle
             :api-key-status="apiKeyStatus"
             @configure-api-key="emit('configure-api-key')"
+            @mode-changed="(mode) => emit('mode-changed', mode)"
           />
           <button class="btn btn-secondary" @click="emit('navigate', 'invoices')">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
