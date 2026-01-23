@@ -33,7 +33,7 @@ app = FastAPI(
 @app.on_event("startup")
 async def startup_event():
     logger.info("Initializing database...")
-    init_db(reset=True)  # Reset DB to apply schema changes
+    init_db(reset=False)  # Create tables if they don't exist, preserve data
 
     logger.info("Creating temp directory...")
     os.makedirs(settings.TEMP_DIR, exist_ok=True)
