@@ -261,6 +261,9 @@ watch(() => props.invoiceId, () => {
             </svg>
             Back to List
           </button>
+          <a href="https://liberapay.com/IRClichtR/donate" target="_blank" class="donate-btn">
+            <img alt="Donate using Liberapay" src="https://liberapay.com/assets/widgets/donate.svg" />
+          </a>
         </div>
       </div>
     </header>

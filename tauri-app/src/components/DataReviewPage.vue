@@ -276,6 +276,9 @@ function getStatusLabel(status: string): string {
           <span class="logo-text">Invoicator</span>
         </div>
         <button class="btn btn-secondary" @click="emit('back')">Cancel</button>
+          <a href="https://liberapay.com/IRClichtR/donate" target="_blank" class="donate-btn">
+            <img alt="Donate using Liberapay" src="https://liberapay.com/assets/widgets/donate.svg" />
+          </a>
       </div>
     </header>
 

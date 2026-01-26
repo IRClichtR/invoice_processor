@@ -17,6 +17,9 @@ const emit = defineEmits<{
           <span class="logo-text">Invoicator</span>
         </div>
         <button class="btn btn-secondary" @click="emit('back')">Back</button>
+        <a href="https://liberapay.com/IRClichtR/donate" target="_blank" class="donate-btn">
+          <img alt="Donate using Liberapay" src="https://liberapay.com/assets/widgets/donate.svg" />
+        </a>
       </div>
     </header>
 
