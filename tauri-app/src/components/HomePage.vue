@@ -106,12 +106,12 @@ function handleFileInput(e: Event) {
     <section class="hero">
       <div class="container">
         <span class="tagline">
-          {{ processingMode === 'local' ? '100% Local Processing' : 'Cloud-Enhanced Processing' }}
+          {{ processingMode === 'local' ? 'Local Processing' : 'Cloud-Enhanced Processing' }}
         </span>
         <h1>Invoicator</h1>
         <p class="subtitle">
-          AI-powered invoice extraction that runs entirely on your machine.
-          No cloud, no data leaks, just results.
+            AI-powered invoice extraction, local by default. 
+            Optional cloud processing for complex documents, always encrypted.
         </p>
 
         <!-- Dropzone -->
@@ -174,7 +174,7 @@ function handleFileInput(e: Event) {
           </div>
 
           <!-- Feature 2: CSV Export -->
-          <div class="feature-card clickable" @click="emit('navigate', 'csv')">
+          <div class="feature-card clickable" @click="emit('navigate', 'invoices')">
             <div class="icon">
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
@@ -198,11 +198,10 @@ function handleFileInput(e: Event) {
                 <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
               </svg>
             </div>
-            <h3>Interrogate Your Data</h3>
+            <h3>Payment matching</h3>
             <p>
-              Ask questions in plain language. Find specific invoices,
-              calculate totals by vendor, or discover spending patterns
-              across your documents.
+                Reconcile your invoices with bank statements to track 
+                paid vs unpaid invoices and detect discrepancies.
             </p>
           </div>
         </div>
