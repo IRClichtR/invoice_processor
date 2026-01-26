@@ -26,7 +26,7 @@ class CleanupService:
     Service for cleaning up expired jobs and temporary files.
 
     Temp file structure:
-    /tmp/parsefacture/
+    {DATA_DIR}/temp/
     ├── {job_id}_original.{ext}      # Uploaded file
     ├── {job_id}_preprocessed.png    # Preprocessed image
     ├── {job_id}_page_{n}.png        # Multi-page PDF pages

@@ -35,8 +35,8 @@ class FlorenceService:
         self.cache_dir = settings.MODEL_CACHE_DIR
 
         os.makedirs(self.cache_dir, exist_ok=True)
-        os.environ["HF_HOME"] = self.cache_dir
-        os.environ["TRANSFORMERS_CACHE"] = self.cache_dir
+        os.environ["HF_HOME"] = str(self.cache_dir)
+        os.environ["TRANSFORMERS_CACHE"] = str(self.cache_dir)
 
     def load_model(self):
         """Load model (CPU-only)"""

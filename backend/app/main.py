@@ -1,14 +1,20 @@
+"""
+Invoice Processor FastAPI Application
+
+Main application module that configures and runs the FastAPI server.
+"""
+
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+import structlog
+
 from app.core.config import settings
 from app.db.base import init_db, SessionLocal
-from app.api import invoices, api_keys
+from app.api import invoices, api_keys, health
 from app.services.model_manager import initialize_models
 from app.services.cleanup_service import CleanupService
 from app.services.api_key_service import ApiKeyService
-from app.services.claude_vision_service import ClaudeVisionService, CLAUDE_API_CONSOLE_URL
-import os
-import structlog
 
 # Configure logging
 structlog.configure(
@@ -18,26 +24,28 @@ structlog.configure(
         structlog.dev.ConsoleRenderer(),
     ]
 )
-logger = structlog.get_logger()
+logger = structlog.get_logger(__name__)
 
-# Create upload directory
-os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
 
-app = FastAPI(
-    title=settings.APP_NAME,
-    version=settings.APP_VERSION,
-    debug=settings.DEBUG
-)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Application lifespan manager.
 
-# Initialize database and models at startup
-@app.on_event("startup")
-async def startup_event():
-    logger.info("Initializing database...")
-    init_db(reset=False)  # Create tables if they don't exist, preserve data
+    Handles startup and shutdown events.
+    """
+    # === STARTUP ===
+    logger.info(
+        "Starting application",
+        mode="production" if settings.is_production_mode() else "development",
+        data_dir=str(settings.DATA_DIR)
+    )
 
-    logger.info("Creating temp directory...")
-    os.makedirs(settings.TEMP_DIR, exist_ok=True)
+    # Initialize database
+    logger.info("Initializing database...", path=str(settings.DATA_SUBDIR / "invoices.db"))
+    init_db(reset=False)
 
+    # Run cleanup of expired jobs
     logger.info("Running cleanup of expired jobs...")
     cleanup_service = CleanupService()
     db = SessionLocal()
@@ -54,9 +62,11 @@ async def startup_event():
     finally:
         db.close()
 
-    logger.info("Initializing models...")
+    # Initialize models
+    logger.info("Initializing models...", cache_dir=str(settings.MODEL_CACHE_DIR))
     initialize_models()
 
+    # Handle API key service tasks
     logger.info("Checking encryption key rotation...")
     api_key_service = ApiKeyService()
     db = SessionLocal()
@@ -65,31 +75,52 @@ async def startup_event():
         if api_key_service.check_and_perform_key_rotation(db):
             logger.info("Encryption key rotation completed successfully")
 
-        # Migrate env API key to database if not already present
-        logger.info("Checking for API key migration from environment...")
-        if api_key_service.migrate_env_key_to_db(db):
-            logger.info("API key migrated from environment to database")
+        # Log API key status
+        status = api_key_service.get_all_status(db)
+        anthropic_status = status.get('anthropic', {})
+        if anthropic_status.get('valid'):
+            logger.info("Anthropic API key is configured and valid")
+        elif anthropic_status.get('configured'):
+            logger.warning(
+                "Anthropic API key is configured but invalid",
+                error=anthropic_status.get('error')
+            )
+        else:
+            logger.info("Anthropic API key not configured - Claude pipeline unavailable")
     except Exception as e:
         logger.warning("API key service startup tasks failed", error=str(e))
     finally:
         db.close()
 
-    logger.info("Checking Anthropic API key...")
-    claude_service = ClaudeVisionService()
-    api_status = claude_service.check_api_key_status()
-    if api_status['valid']:
-        logger.info("Anthropic API key is valid and ready for use")
-    elif api_status['configured']:
-        logger.warning(
-            "Anthropic API key is configured but invalid",
-            error=api_status['error'],
-            console_url=CLAUDE_API_CONSOLE_URL
-        )
-    else:
-        logger.info(
-            "Anthropic API key not configured - Claude pipeline will be unavailable",
-            console_url=CLAUDE_API_CONSOLE_URL
-        )
+    logger.info("Application startup complete")
+
+    yield  # Application runs here
+
+    # === SHUTDOWN ===
+    logger.info("Application shutting down...")
+
+    # Cleanup temp files
+    try:
+        cleanup_service = CleanupService()
+        db = SessionLocal()
+        try:
+            cleanup_service.cleanup_temp_files(str(settings.TEMP_DIR))
+            logger.info("Temp files cleaned up")
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning("Cleanup failed on shutdown", error=str(e))
+
+    logger.info("Application shutdown complete")
+
+
+# Create FastAPI application
+app = FastAPI(
+    title=settings.APP_NAME,
+    version=settings.APP_VERSION,
+    debug=settings.DEBUG,
+    lifespan=lifespan
+)
 
 # CORS middleware
 app.add_middleware(
@@ -101,15 +132,23 @@ app.add_middleware(
 )
 
 # Include routers
+app.include_router(health.router, prefix="/api/v1", tags=["health"])
 app.include_router(invoices.router, prefix="/api/v1", tags=["invoices"])
 app.include_router(api_keys.router, prefix="/api/v1", tags=["api-keys"])
 
 
 @app.get("/")
 async def root():
-    return {"message": "Invoice Processor API", "version": settings.APP_VERSION}
+    """Root endpoint with API information."""
+    return {
+        "message": "Invoice Processor API",
+        "version": settings.APP_VERSION,
+        "mode": "production" if settings.is_production_mode() else "development"
+    }
 
 
+# Keep /health at root level for simple health checks
 @app.get("/health")
 async def health_check():
+    """Simple health check endpoint at root level."""
     return {"status": "healthy"}

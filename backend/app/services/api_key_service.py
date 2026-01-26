@@ -343,16 +343,11 @@ class ApiKeyService:
 
     def get_anthropic_key_for_processing(self, db: Session) -> Optional[str]:
         """
-        Get Anthropic API key for processing, with fallback to env var.
-
-        Priority:
-        1. Database-stored key (if valid)
-        2. Environment variable
+        Get Anthropic API key for processing from database.
 
         Returns:
-            API key or None if not available
+            API key or None if not available/valid
         """
-        # Try database first
         db_key = self.get_api_key('anthropic', db)
         if db_key:
             # Check if it's marked as valid and not expired
@@ -360,46 +355,22 @@ class ApiKeyService:
             if api_key_record and api_key_record.is_valid and not api_key_record.is_expired():
                 return db_key
 
-        # Fallback to environment variable
-        if settings.has_valid_claude_api_key():
-            return settings.ANTHROPIC_API_KEY
-
         return None
 
     def migrate_env_key_to_db(self, db: Session) -> bool:
         """
-        Migrate API key from environment variable to database.
+        Legacy method - environment variable migration is no longer supported.
 
-        This is called at startup to ensure env keys are stored securely in DB.
-        Returns True if a migration was performed.
+        API keys should be configured through the UI and stored in the database.
+        This method is kept for backwards compatibility but does nothing.
+
+        Returns:
+            False (no migration performed)
         """
-        # Check if key already in DB
-        existing = db.query(ApiKey).filter(ApiKey.provider == 'anthropic').first()
-        if existing:
-            logger.debug("Anthropic API key already in database, skipping migration")
-            return False
-
-        # Check if valid key in env
-        if not settings.has_valid_claude_api_key():
-            logger.debug("No valid Anthropic API key in environment to migrate")
-            return False
-
-        # Migrate env key to DB
-        logger.info("Migrating ANTHROPIC_API_KEY from environment to database")
-        result = self.store_api_key(
-            'anthropic',
-            settings.ANTHROPIC_API_KEY,
-            db,
-            validate=True,
-            source='env_migrated'
-        )
-
-        if result['success']:
-            logger.info("Successfully migrated Anthropic API key from environment to database")
-            return True
-        else:
-            logger.warning("Failed to migrate Anthropic API key", error=result.get('error'))
-            return False
+        # Environment variable migration is no longer supported
+        # API keys are now only stored in the database
+        logger.debug("Environment key migration is deprecated - API keys managed via UI only")
+        return False
 
     def rotate_encryption_key(self, old_key: str, new_key: str, db: Session) -> bool:
         """

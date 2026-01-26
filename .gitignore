@@ -31,6 +31,7 @@ MANIFEST
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
+!backend/invoice_processor.spec
 
 # Installer logs
 pip-log.txt
@@ -177,6 +178,9 @@ marimo/_lsp/
 __marimo__/
 node_modules
 alembic/versions/*
+
+# Make stamp files
+.build/
 
 # Documents
 documents

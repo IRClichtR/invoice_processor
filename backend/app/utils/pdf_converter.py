@@ -3,6 +3,8 @@ from PIL import Image
 from typing import List
 import os
 
+from app.core.bundled_deps import get_poppler_path
+
 
 class PDFConverter:
     """Convert PDF documents to images"""
@@ -20,7 +22,7 @@ class PDFConverter:
             List of PIL Image objects, one per page
         """
         try:
-            images = convert_from_path(pdf_path, dpi=dpi)
+            images = convert_from_path(pdf_path, dpi=dpi, poppler_path=get_poppler_path())
             return images
         except Exception as e:
             raise Exception(f"Error converting PDF to images: {str(e)}")

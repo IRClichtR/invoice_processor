@@ -290,28 +290,19 @@ class ProcessingService:
             }
 
         try:
-            # Temporarily set API key for Claude service
-            original_key = settings.ANTHROPIC_API_KEY
-            settings.ANTHROPIC_API_KEY = api_key
-            self._claude_service = None  # Reset to pick up new key
+            # Call Claude service with database session (API key read from DB)
+            claude_result = self.claude_service.extract_invoice_data(
+                image=images[0],
+                db=db,
+                ocr_context=job.ocr_full_text or ''
+            )
 
-            try:
-                claude_result = self.claude_service.extract_invoice_data(
-                    image=images[0],
-                    ocr_context=job.ocr_full_text or ''
-                )
-
-                return {
-                    'structured_data': claude_result.get('structured_data', {}),
-                    'raw_response': claude_result.get('raw_response', ''),
-                    'method': 'claude',
-                    'model_used': claude_result.get('model_used', 'claude')
-                }
-
-            finally:
-                # Restore original key
-                settings.ANTHROPIC_API_KEY = original_key
-                self._claude_service = None
+            return {
+                'structured_data': claude_result.get('structured_data', {}),
+                'raw_response': claude_result.get('raw_response', ''),
+                'method': 'claude',
+                'model_used': claude_result.get('model_used', 'claude')
+            }
 
         except APIKeyNotConfiguredError:
             return {

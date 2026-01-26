@@ -12,6 +12,7 @@ import io
 import json
 import re
 import structlog
+from sqlalchemy.orm import Session
 
 from app.core.config import settings
 
@@ -88,16 +89,19 @@ Important:
 
     def __init__(self):
         self._client = None
+        self._api_key = None
 
-    def _get_client(self):
-        """Get or create Anthropic client, validating API key"""
-        if not settings.has_valid_claude_api_key():
+    def _get_client(self, api_key: str):
+        """Get or create Anthropic client with provided API key"""
+        if not api_key:
             raise APIKeyNotConfiguredError()
 
-        if self._client is None:
+        # Create new client if key changed
+        if self._api_key != api_key or self._client is None:
             try:
                 from anthropic import Anthropic
-                self._client = Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+                self._client = Anthropic(api_key=api_key)
+                self._api_key = api_key
             except ImportError:
                 raise ClaudeVisionError(
                     "anthropic package not installed. "
@@ -106,9 +110,18 @@ Important:
 
         return self._client
 
-    def check_api_key_status(self) -> Dict[str, Any]:
+    def _get_api_key_from_db(self, db: Session) -> Optional[str]:
+        """Get API key from database using api_key_service"""
+        from app.services.api_key_service import ApiKeyService
+        api_key_service = ApiKeyService()
+        return api_key_service.get_anthropic_key_for_processing(db)
+
+    def check_api_key_status(self, db: Session) -> Dict[str, Any]:
         """
         Check if Claude API key is configured and valid.
+
+        Args:
+            db: Database session
 
         Returns:
             {
@@ -125,19 +138,22 @@ Important:
             'console_url': CLAUDE_API_CONSOLE_URL
         }
 
-        if not settings.ANTHROPIC_API_KEY:
+        api_key = self._get_api_key_from_db(db)
+
+        if not api_key:
             result['error'] = "API key not configured"
             return result
 
         result['configured'] = True
 
-        if not settings.has_valid_claude_api_key():
+        # Check key format
+        if not api_key.startswith('sk-ant-') or len(api_key) < 20:
             result['error'] = "API key format appears invalid"
             return result
 
         # Try a minimal API call to validate the key
         try:
-            client = self._get_client()
+            client = self._get_client(api_key)
             client.messages.create(
                 model=settings.CLAUDE_MODEL,
                 max_tokens=10,
@@ -172,6 +188,7 @@ Important:
     def extract_invoice_data(
         self,
         image: Image.Image,
+        db: Session,
         ocr_context: Optional[str] = None
     ) -> Dict[str, Any]:
         """
@@ -179,6 +196,7 @@ Important:
 
         Args:
             image: PIL Image of the invoice
+            db: Database session (to get API key)
             ocr_context: Optional OCR text for additional context
 
         Returns:
@@ -193,7 +211,12 @@ Important:
             APIKeyInvalidError: If API key is invalid
             ClaudeVisionError: For other errors
         """
-        client = self._get_client()
+        # Get API key from database
+        api_key = self._get_api_key_from_db(db)
+        if not api_key:
+            raise APIKeyNotConfiguredError()
+
+        client = self._get_client(api_key)
 
         # Convert image to base64
         image_base64 = self._image_to_base64(image)
