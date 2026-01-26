@@ -5,8 +5,23 @@
 
 import { ApiException } from './types';
 
-// Base URL - empty for proxy in development, can be configured for production
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
+// Base URL detection:
+// 1. Explicit env var takes precedence
+// 2. In Tauri production mode (no dev server proxy), connect directly to backend
+// 3. Empty string = use Vite dev proxy
+function detectBaseUrl(): string {
+  const explicit = import.meta.env.VITE_API_BASE_URL;
+  if (explicit) return explicit;
+
+  // Tauri production mode: no Vite proxy, connect directly to backend
+  if ((window as any).__TAURI_INTERNALS__ && !import.meta.env.DEV) {
+    return 'http://127.0.0.1:8000';
+  }
+
+  return '';
+}
+
+const API_BASE_URL = detectBaseUrl();
 const API_PREFIX = '/api/v1';
 
 // Enable debug logging in development
