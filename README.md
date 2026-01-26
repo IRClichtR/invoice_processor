@@ -1,6 +1,6 @@
 # Invoicator
 
-[![Donate using Liberapay](https://liberapay.com/assets/widgets/donate.svg)](https://liberapay.com/IRClichtR/donate)
+[![Support me on Ko-fi](https://storage.ko-fi.com/cdn/kofi2.png?v=3)](https://ko-fi.com/W7W41T13JM)
 
 A desktop application for processing invoices locally using OCR and vision-language models. Built with Tauri, Vue.js, and a Python/FastAPI backend.
 
