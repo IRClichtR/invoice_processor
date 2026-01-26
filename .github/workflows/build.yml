@@ -1,151 +1,133 @@
-# name: Build & Release
+name: Build & Release
 
-# on:
-#   push:
-#     branches: [main]
-#   pull_request:
-#     branches: [main]
-#   workflow_dispatch:
-#     inputs:
-#       create_release:
-#         description: 'Create a draft GitHub release'
-#         required: false
-#         default: false
-#         type: boolean
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: 'Create a draft GitHub release'
+        required: false
+        default: false
+        type: boolean
 
-# concurrency:
-#   group: ${{ github.workflow }}-${{ github.ref }}
-#   cancel-in-progress: true
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
-# env:
-#   PYTHON_VERSION: '3.11'
-#   NODE_VERSION: 'lts/*'
+env:
+  PYTHON_VERSION: '3.11'
+  NODE_VERSION: 'lts/*'
 
-# jobs:
-#   build:
-#     strategy:
-#       fail-fast: false
-#       matrix:
-#         include:
-#           - os: ubuntu-22.04
-#             platform: linux
-#             rust_target: ''
-#           - os: macos-latest
-#             platform: macos
-#             rust_target: aarch64-apple-darwin
-#           - os: windows-latest
-#             platform: windows
-#             rust_target: ''
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            platform: linux
+            rust_target: ''
+          - os: macos-latest
+            platform: macos
+            rust_target: aarch64-apple-darwin
+          - os: windows-latest
+            platform: windows
+            rust_target: ''
 
-#     runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
 
-#     steps:
-#       - name: Checkout
-#         uses: actions/checkout@v4
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-#       # --- System dependencies ---
-#       - name: Install system dependencies (Linux)
-#         if: matrix.platform == 'linux'
-#         run: |
-#           sudo apt-get update
-#           sudo apt-get install -y \
-#             libwebkit2gtk-4.1-dev \
-#             libappindicator3-dev \
-#             librsvg2-dev \
-#             patchelf \
-#             tesseract-ocr \
-#             tesseract-ocr-eng \
-#             tesseract-ocr-fra \
-#             poppler-utils
+      # --- System dependencies ---
+      - name: Install GNU Make (Windows)
+        if: matrix.platform == 'windows'
+        run: choco install make -y
 
-#       - name: Install system dependencies (macOS)
-#         if: matrix.platform == 'macos'
-#         run: brew install tesseract poppler
+      - name: Install system build dependencies
+        run: make setup CONFIRM=1
 
-#       - name: Install system dependencies (Windows)
-#         if: matrix.platform == 'windows'
-#         run: choco install tesseract make
+      # --- Python ---
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
 
-#       # --- Python ---
-#       - name: Set up Python
-#         uses: actions/setup-python@v5
-#         with:
-#           python-version: ${{ env.PYTHON_VERSION }}
-#           cache: pip
-#           cache-dependency-path: backend/requirements.txt
+      # --- Node.js ---
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: tauri-app/package-lock.json
 
-#       - name: Install Python dependencies
-#         run: pip install -r backend/requirements.txt pyinstaller
+      # --- Rust ---
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
 
-#       # --- Node.js ---
-#       - name: Set up Node.js
-#         uses: actions/setup-node@v4
-#         with:
-#           node-version: ${{ env.NODE_VERSION }}
-#           cache: npm
-#           cache-dependency-path: tauri-app/package-lock.json
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: tauri-app/src-tauri -> target
 
-#       # --- Rust ---
-#       - name: Set up Rust
-#         uses: dtolnay/rust-toolchain@stable
-#         with:
-#           targets: ${{ matrix.rust_target }}
+      # --- Build backend & frontend deps via Makefile ---
+      - name: Build backend and install frontend deps
+        run: make resources frontend-deps
 
-#       - name: Rust cache
-#         uses: swatinem/rust-cache@v2
-#         with:
-#           workspaces: tauri-app/src-tauri -> target
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: tauri-app
+          args: ${{ matrix.rust_target && format('--target {0}', matrix.rust_target) || '' }}
 
-#       # --- Build backend & frontend deps via Makefile ---
-#       - name: Build backend and install frontend deps
-#         run: make resources frontend-deps
+      # --- Upload artifacts ---
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: invoicator-${{ matrix.platform }}
+          path: |
+            tauri-app/src-tauri/target/**/release/bundle/**/*.deb
+            tauri-app/src-tauri/target/**/release/bundle/**/*.AppImage
+            tauri-app/src-tauri/target/**/release/bundle/**/*.dmg
+            tauri-app/src-tauri/target/**/release/bundle/**/*.app
+            tauri-app/src-tauri/target/**/release/bundle/**/*.msi
+            tauri-app/src-tauri/target/**/release/bundle/**/*.exe
+          if-no-files-found: warn
 
-#       - name: Build Tauri app
-#         uses: tauri-apps/tauri-action@v0
-#         env:
-#           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-#         with:
-#           projectPath: tauri-app
-#           args: ${{ matrix.rust_target && format('--target {0}', matrix.rust_target) || '' }}
+  release:
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.create_release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
-#       # --- Upload artifacts ---
-#       - name: Upload build artifacts
-#         uses: actions/upload-artifact@v4
-#         with:
-#           name: invoicator-${{ matrix.platform }}
-#           path: |
-#             tauri-app/src-tauri/target/**/release/bundle/**/*.deb
-#             tauri-app/src-tauri/target/**/release/bundle/**/*.AppImage
-#             tauri-app/src-tauri/target/**/release/bundle/**/*.dmg
-#             tauri-app/src-tauri/target/**/release/bundle/**/*.app
-#             tauri-app/src-tauri/target/**/release/bundle/**/*.msi
-#             tauri-app/src-tauri/target/**/release/bundle/**/*.exe
-#           if-no-files-found: warn
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-#   release:
-#     needs: build
-#     if: github.event_name == 'workflow_dispatch' && inputs.create_release
-#     runs-on: ubuntu-latest
-#     permissions:
-#       contents: write
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
 
-#     steps:
-#       - name: Checkout
-#         uses: actions/checkout@v4
+      - name: List artifacts
+        run: find artifacts -type f | head -50
 
-#       - name: Download all artifacts
-#         uses: actions/download-artifact@v4
-#         with:
-#           path: artifacts
-
-#       - name: List artifacts
-#         run: find artifacts -type f | head -50
-
-#       - name: Create draft release
-#         uses: softprops/action-gh-release@v2
-#         with:
-#           draft: true
-#           generate_release_notes: true
-#           tag_name: v${{ github.run_number }}
-#           name: Invoicator v${{ github.run_number }}
-#           files: artifacts/**/*
+      - name: Create draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          tag_name: v${{ github.run_number }}
+          name: Invoicator v${{ github.run_number }}
+          files: artifacts/**/*

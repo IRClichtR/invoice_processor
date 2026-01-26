@@ -6,7 +6,6 @@ import {
   getInvoiceDocumentUrl,
   type InvoiceResponse,
   type InvoiceUpdate,
-  type InvoiceLineUpdate,
   ApiException
 } from '../api';
 

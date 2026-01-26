@@ -208,6 +208,11 @@ class Settings:
         except (ValueError, TypeError):
             return False
 
+    def has_valid_claude_api_key(self) -> bool:
+        """Check if a valid Anthropic API key is set in the environment."""
+        key = os.environ.get("ANTHROPIC_API_KEY", "")
+        return key.startswith("sk-ant-") and len(key) > 20
+
     def is_production_mode(self) -> bool:
         """Check if running in production mode (DATA_DIR explicitly set by Tauri)."""
         return self._data_dir_from_env

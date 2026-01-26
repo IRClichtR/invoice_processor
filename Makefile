@@ -27,6 +27,23 @@ else
 endif
 
 # ---------------------------------------------------------------------------
+# Python virtual environment
+# ---------------------------------------------------------------------------
+VENV_DIR := backend/venv
+
+ifeq ($(PLATFORM),windows)
+    VENV_BIN    := $(VENV_DIR)/Scripts
+    SYS_PYTHON  := python
+else
+    VENV_BIN    := $(VENV_DIR)/bin
+    SYS_PYTHON  := python3
+endif
+
+PIP         := $(CURDIR)/$(VENV_BIN)/pip
+PYTHON      := $(CURDIR)/$(VENV_BIN)/python
+PYINSTALLER := $(CURDIR)/$(VENV_BIN)/pyinstaller
+
+# ---------------------------------------------------------------------------
 # Platform-specific shell helpers (used via $(call CMD,args...))
 # ---------------------------------------------------------------------------
 ifeq ($(PLATFORM),windows)
@@ -50,18 +67,66 @@ else ifeq ($(PLATFORM),windows)
     FETCH_VENDOR = cd backend && powershell -ExecutionPolicy Bypass -File scripts/fetch_deps_windows.ps1
 endif
 
+# System dependency check (used as pre-flight guard)
+ifeq ($(PLATFORM),windows)
+    CHECK_TESSERACT = where tesseract >NUL 2>&1
+else
+    CHECK_TESSERACT = command -v tesseract >/dev/null 2>&1
+endif
+
+# Packages installed by `make setup`
+LINUX_DEPS := tesseract-ocr tesseract-ocr-eng tesseract-ocr-fra poppler-utils \
+              libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf \
+              libfuse2
+
 # ---------------------------------------------------------------------------
 # Phony targets
 # ---------------------------------------------------------------------------
-.PHONY: all install-python-deps vendor-deps backend resources frontend-deps \
+.PHONY: all setup venv install-python-deps vendor-deps backend resources frontend-deps \
         tauri dev dev-backend dev-frontend \
-        clean clean-backend clean-vendor clean-resources clean-frontend help
+        clean clean-venv clean-backend clean-vendor clean-resources clean-frontend help
+
+# ---------------------------------------------------------------------------
+# Setup — install system build dependencies
+# ---------------------------------------------------------------------------
+setup:
+ifeq ($(PLATFORM),linux)
+	@echo "The following packages will be installed via apt:"
+	@echo "  $(LINUX_DEPS)"
+	@echo ""
+	@if [ "$(CONFIRM)" != "1" ]; then \
+		printf "Continue? [Y/n] "; \
+		read ans; \
+		case "$$ans" in [nN]*) echo "Aborted."; exit 1;; esac; \
+	fi
+	@if [ "$$(id -u)" = "0" ]; then \
+		apt-get update && apt-get install -y $(LINUX_DEPS); \
+	else \
+		sudo apt-get update && sudo apt-get install -y $(LINUX_DEPS); \
+	fi
+else ifeq ($(PLATFORM),macos)
+	@echo "The following packages will be installed via Homebrew:"
+	@echo "  tesseract poppler"
+	@echo ""
+	@if [ "$(CONFIRM)" != "1" ]; then \
+		printf "Continue? [Y/n] "; \
+		read ans; \
+		case "$$ans" in [nN]*) echo "Aborted."; exit 1;; esac; \
+	fi
+	brew install tesseract poppler
+else ifeq ($(PLATFORM),windows)
+	@echo The following packages will be installed via Chocolatey:
+	@echo   tesseract
+	choco install tesseract -y
+endif
+	@echo System build dependencies installed successfully.
 
 # ---------------------------------------------------------------------------
 # Build targets
 # ---------------------------------------------------------------------------
 all: tauri
 
+venv: .build/venv.stamp
 install-python-deps: .build/python-deps.stamp
 vendor-deps: .build/vendor-deps.stamp
 backend: .build/backend.stamp
@@ -77,16 +142,26 @@ tauri: .build/resources.stamp .build/frontend-deps.stamp
 .build:
 	$(call MKDIR,.build)
 
-.build/python-deps.stamp: backend/requirements.txt | .build
-	pip install -r backend/requirements.txt pyinstaller
+.build/venv.stamp: | .build
+	$(SYS_PYTHON) -m venv $(VENV_DIR)
+	$(call TOUCH,$@)
+
+.build/python-deps.stamp: backend/requirements.txt .build/venv.stamp | .build
+	$(PIP) install -r backend/requirements.txt pyinstaller
 	$(call TOUCH,$@)
 
 .build/vendor-deps.stamp: | .build
+	@$(CHECK_TESSERACT) || \
+		{ echo ""; \
+		  echo "ERROR: System build dependencies not found (tesseract, poppler)."; \
+		  echo "Run 'make setup' to install them, then retry."; \
+		  echo ""; \
+		  exit 1; }
 	$(FETCH_VENDOR)
 	$(call TOUCH,$@)
 
 .build/backend.stamp: .build/python-deps.stamp .build/vendor-deps.stamp | .build
-	cd backend && pyinstaller invoice_processor.spec --noconfirm
+	cd backend && $(PYINSTALLER) invoice_processor.spec --noconfirm
 	$(call TOUCH,$@)
 
 .build/resources.stamp: .build/backend.stamp | .build
@@ -108,8 +183,8 @@ dev:
 	@echo "  Terminal 1 (backend):   make dev-backend"
 	@echo "  Terminal 2 (frontend):  make dev-frontend"
 
-dev-backend:
-	cd backend && python run_server.py
+dev-backend: .build/python-deps.stamp
+	cd backend && $(PYTHON) run_server.py
 
 dev-frontend:
 	cd tauri-app && npm run tauri dev
@@ -117,8 +192,11 @@ dev-frontend:
 # ---------------------------------------------------------------------------
 # Clean
 # ---------------------------------------------------------------------------
-clean: clean-backend clean-vendor clean-resources clean-frontend
+clean: clean-backend clean-vendor clean-resources clean-frontend clean-venv
 	$(call RM,.build)
+
+clean-venv:
+	$(call RM,$(VENV_DIR))
 
 clean-backend:
 	$(call RM,backend/dist)
@@ -141,8 +219,13 @@ help:
 	@echo ""
 	@echo "Usage: make [target]"
 	@echo ""
+	@echo "Setup:"
+	@echo "  setup                Install system build dependencies (tesseract, poppler, ...)"
+	@echo "                       Use CONFIRM=1 to skip the interactive prompt"
+	@echo ""
 	@echo "Build targets:"
 	@echo "  all                  Full production build (default)"
+	@echo "  venv                 Create Python virtual environment"
 	@echo "  install-python-deps  Install Python dependencies and PyInstaller"
 	@echo "  vendor-deps          Fetch platform vendor binaries (tesseract, poppler)"
 	@echo "  backend              Build backend with PyInstaller"
@@ -157,6 +240,7 @@ help:
 	@echo ""
 	@echo "Clean:"
 	@echo "  clean                Remove all build artifacts"
+	@echo "  clean-venv           Remove Python virtual environment"
 	@echo "  clean-backend        Remove backend/dist and backend/build"
 	@echo "  clean-vendor         Remove backend/vendor/$(PLATFORM)"
 	@echo "  clean-resources      Remove tauri-app/src-tauri/resources/backend"

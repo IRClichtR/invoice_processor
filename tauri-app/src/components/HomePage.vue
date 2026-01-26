@@ -3,7 +3,7 @@ import { ref } from 'vue';
 import ProcessingModeToggle from './ProcessingModeToggle.vue';
 import type { ApiKeyStatus } from '../api/types';
 
-const props = defineProps<{
+defineProps<{
   apiKeyStatus: ApiKeyStatus | null;
   processingMode: 'local' | 'cloud';
 }>();
