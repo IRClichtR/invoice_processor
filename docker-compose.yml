@@ -7,12 +7,18 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./backend:/app
-      - ./backend/uploads:/app/uploads
-      - model_cache:/root/.cache/invoice_processor/models
+      - invoice_data:/data
+      - model_cache:/data/models
     environment:
-      DATABASE_URL: sqlite:///./invoice_db.sqlite
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+      HOST: "0.0.0.0"
+      DATA_DIR: /data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
 
 volumes:
+  invoice_data:
   model_cache:

@@ -1,244 +1,202 @@
-# Invoice Processor API
+# Invoicator
 
-A comprehensive backend API for processing invoices in PDF format with OCR, VLM extraction, and validation.
+A desktop application for processing invoices locally using OCR and vision-language models. Built with Tauri, Vue.js, and a Python/FastAPI backend.
 
 ## Features
 
-- **PDF Processing**: Convert PDF documents to images
-- **Image Preprocessing**: Deskew, CLAHE contrast enhancement, denoising, and binarization
-- **OCR Extraction**: Tesseract OCR optimized for French and English text with position and confidence data
-- **VLM Extraction**: Florence-2 Vision-Language Model for structured data extraction
-- **Invoice Validation**: Automatic detection of invoice documents and VAT validation
-- **Database Storage**: PostgreSQL database with separate tables for invoices, invoice lines, and other documents
+- **Local-first processing**: Documents are processed on your machine -- no cloud upload required
+- **PDF and image support**: Process PDF documents and image files (JPG, PNG, TIFF, WEBP)
+- **OCR extraction**: Tesseract OCR optimized for French and English text
+- **VLM extraction**: Florence-2 Vision-Language Model for structured data extraction
+- **Claude API fallback**: Optional external processing via Anthropic Claude for documents that cannot be processed locally
+- **Invoice validation**: Automatic detection of invoice documents and VAT validation
+- **Cross-platform**: Builds for Linux, macOS (ARM), and Windows
+
+## Architecture
+
+```
+Invoicator (Tauri shell)
+├── Frontend: Vue.js + TypeScript + Tailwind CSS
+├── Rust layer: Backend lifecycle management, health checks
+└── Backend: Python/FastAPI (bundled via PyInstaller)
+    ├── Tesseract OCR (bundled)
+    ├── Poppler (bundled)
+    ├── Florence-2 (auto-downloaded on first run)
+    └── SQLite database
+```
+
+In production, Tauri spawns the Python backend as a child process and monitors it via a `/health` endpoint. In development, the backend runs separately and the Vite dev server proxies API requests.
 
 ## Tech Stack
 
-- **FastAPI**: Modern Python web framework
-- **PostgreSQL**: Relational database
-- **Tesseract OCR**: Text extraction with French and English support
-- **Florence-2**: Vision-Language Model for structured data extraction
-- **OpenCV**: Image preprocessing
-- **Docker**: Containerized deployment
+- **Desktop**: Tauri 2 (Rust)
+- **Frontend**: Vue.js 3, TypeScript, Tailwind CSS
+- **Backend**: Python, FastAPI, Uvicorn
+- **Database**: SQLite
+- **OCR**: Tesseract (French + English)
+- **ML**: Florence-2 (local), Anthropic Claude API (optional fallback)
+- **Packaging**: PyInstaller (backend), Tauri bundler (desktop)
+- **CI/CD**: GitHub Actions (Linux, macOS ARM, Windows)
 
-## Database Schema
+## Installation (End Users)
 
-### Invoices Table
-- `id`: Primary key
-- `provider`: Supplier/provider name
-- `date`: Invoice date
-- `invoice_number`: Invoice number
-- `total_without_vat`: Total amount HT
-- `total_with_vat`: Total amount TTC
-- `confidence_score`: OCR confidence score
-- `raw_vlm_json`: Raw VLM extraction JSON (for debugging)
-- `raw_vlm_response`: Raw VLM response text (for debugging)
-- `created_at`: Creation timestamp
-- `updated_at`: Update timestamp
+Download the latest installer from the
+[Releases](https://github.com/IRClichtR/invoice_processor/releases) page:
 
-### Invoice Lines Table
-- `id`: Primary key
-- `invoice_id`: Foreign key to invoices
-- `designation`: Item description
-- `quantity`: Quantity
-- `unit`: Unit of measure
-- `unit_price`: Unit price
-- `total_ht`: Line total without VAT
+- **Windows**: `.msi` installer
+- **macOS**: `.dmg` disk image
+- **Linux**: `.deb` package or `.AppImage`
 
-### Other Documents Table
-- `id`: Primary key
-- `provider`: Document provider (if detectable)
-- `raw_text`: Full OCR text
-- `created_at`: Creation timestamp
-- `updated_at`: Update timestamp
+All dependencies are bundled. No developer tools required.
 
-## Setup
+> The Florence-2 ML model (~1.8 GB) downloads automatically on first use.
+
+## Development Setup
 
 ### Prerequisites
 
-- Docker and Docker Compose
-- At least 4GB RAM (for Florence-2 model)
-- GPU (optional, for faster processing)
+- GNU Make (`make` — pre-installed on Linux/macOS; on Windows: `choco install make`)
+- Python 3.11+
+- Node.js (LTS)
+- Rust (stable)
 
-### Installation
+### Getting Started
 
-1. Clone the repository:
+1. Install system build dependencies:
+
 ```bash
-cd invoice_processor
+make setup
 ```
 
-2. Build and start the containers:
+2. Build the app:
+
 ```bash
-docker-compose up --build
+make
 ```
 
-3. The API will be available at `http://localhost:8000`
+### Running in Development
 
-### API Documentation
-
-Once running, access the interactive API documentation at:
-- Swagger UI: `http://localhost:8000/docs`
-- ReDoc: `http://localhost:8000/redoc`
-
-## API Endpoints
-
-### Upload Invoice
-```
-POST /api/v1/invoices/upload
-```
-Upload a PDF file for processing. The system will:
-1. Convert PDF to images
-2. Preprocess images (deskew, CLAHE, denoise)
-3. Extract text with Tesseract OCR
-4. Use Florence-2 for structured extraction
-5. Validate if document is an invoice
-6. Validate VAT calculations
-7. Store in appropriate database table
-
-**Request**: multipart/form-data with PDF file
-
-**Response**:
-```json
-{
-  "success": true,
-  "document_type": "invoice",
-  "invoice_id": 1,
-  "processing_steps": {
-    "pdf_conversion": {"success": true, "page_count": 2},
-    "preprocessing": {"success": true, "images_processed": 2},
-    "ocr": {"success": true, "average_confidence": 87.5},
-    "validation": {"is_invoice": true, "confidence": 0.8}
-  },
-  "validation": {
-    "overall_valid": true,
-    "validations": {
-      "vat": {"is_valid": true, "difference": 0.01}
-    }
-  }
-}
-```
-
-### Get All Invoices
-```
-GET /api/v1/invoices?skip=0&limit=100
-```
-
-### Get Invoice by ID
-```
-GET /api/v1/invoices/{invoice_id}
-```
-
-### Get Other Documents
-```
-GET /api/v1/other-documents?skip=0&limit=100
-```
-
-### Delete Invoice
-```
-DELETE /api/v1/invoices/{invoice_id}
-```
-
-## Processing Pipeline
-
-1. **PDF to Images**: Convert each PDF page to high-resolution images (300 DPI)
-
-2. **Preprocessing**:
-   - **Deskew**: Correct rotation/skew
-   - **CLAHE**: Enhance contrast
-   - **Denoise**: Remove noise
-   - **Binarization**: Optional black/white conversion
-
-3. **OCR with Tesseract**:
-   - Extract text with French and English language models
-   - Capture word positions and confidence scores
-   - Organize text by blocks and lines
-
-4. **VLM Extraction with Florence-2**:
-   - Sophisticated table detection
-   - Column identification (designation, quantity, price, total)
-   - Line item extraction using spatial analysis
-   - Fallback methods for non-tabular formats
-
-5. **Validation**:
-   - Document type detection (invoice vs. other)
-   - VAT calculation validation
-   - Line item sum verification
-   - Completeness check
-
-6. **Database Storage**:
-   - Invoices stored in `invoices` and `invoice_lines` tables
-   - Non-invoice documents in `other_documents` table
-   - Raw data preserved for debugging
-
-## Configuration
-
-Edit `backend/.env` to configure:
-
-```env
-DATABASE_URL=postgresql://postgres:postgres@db:5432/invoice_db
-TESSERACT_LANG=fra+eng  # OCR languages
-DEVICE=cpu  # or 'cuda' for GPU
-```
-
-## Development
-
-### Running Locally
+1. Start the backend:
 
 ```bash
 cd backend
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
-uvicorn app.main:app --reload
+python run_server.py
 ```
 
-### Database Migrations
-
-The application automatically creates tables on startup. For production, consider using Alembic migrations.
-
-## Testing
-
-Upload a sample invoice:
+2. In a separate terminal, start the Tauri dev app:
 
 ```bash
-curl -X POST "http://localhost:8000/api/v1/invoices/upload" \
-  -H "accept: application/json" \
-  -H "Content-Type: multipart/form-data" \
-  -F "file=@sample_invoice.pdf"
+cd tauri-app
+npm install
+npm run tauri dev
 ```
 
-## Performance Notes
+The Vite dev server proxies `/api/*` requests to the backend at `localhost:8000`.
 
-- **OCR**: ~2-5 seconds per page
-- **Florence-2**: ~5-15 seconds (CPU), ~1-3 seconds (GPU)
-- **Total**: ~10-25 seconds per invoice on CPU
+### Production Build
+
+Build everything with Make:
+
+```bash
+make           # Full build: backend + Tauri app
+```
+
+Or run individual stages:
+
+```bash
+make setup             # Install system build dependencies
+make vendor-deps       # Fetch platform vendor binaries
+make backend           # Build backend with PyInstaller
+make resources         # Copy backend into Tauri resources
+make frontend-deps     # Install npm dependencies
+make tauri             # Build the Tauri desktop app
+make clean             # Remove all build artifacts
+make help              # Show all targets
+```
+
+On Windows, install GNU Make via `choco install make`.
+
+Installers are output to `tauri-app/src-tauri/target/release/bundle/`.
+
+## CI/CD
+
+The GitHub Actions workflow (`.github/workflows/build.yml`) builds for all three platforms on every push to `main` and on pull requests. The workflow delegates build steps to Makefile targets (`make resources frontend-deps`), then uses `tauri-action` for the final Tauri build with signing and bundling. A draft GitHub release can be created via manual workflow dispatch.
+
+## API Endpoints
+
+The backend exposes a REST API under `/api/v1`:
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/v1/invoices/upload` | Upload a PDF/image for processing |
+| `GET` | `/api/v1/invoices` | List all invoices |
+| `GET` | `/api/v1/invoices/{id}` | Get invoice by ID |
+| `DELETE` | `/api/v1/invoices/{id}` | Delete an invoice |
+| `GET` | `/api/v1/other-documents` | List non-invoice documents |
+| `GET` | `/health` | Basic health check |
+| `GET` | `/health/detailed` | Detailed health check with component status |
+
+When the backend is running, interactive API docs are available at `http://localhost:8000/docs`.
+
+## Processing Pipeline
+
+1. **PDF to images** -- Convert each page to 300 DPI images via Poppler
+2. **Preprocessing** -- Deskew, CLAHE contrast enhancement, denoising, binarization
+3. **OCR** -- Tesseract extracts text with word positions and confidence scores
+4. **VLM extraction** -- Florence-2 performs structured data extraction (table detection, column identification, line items)
+5. **Validation** -- Invoice detection, VAT calculation verification, line item sum check
+6. **Storage** -- Invoices and line items stored in SQLite; non-invoice documents stored separately
+
+## Database Schema
+
+### Invoices
+
+`id`, `provider`, `date`, `invoice_number`, `total_without_vat`, `total_with_vat`, `confidence_score`, `raw_vlm_json`, `raw_vlm_response`, `created_at`, `updated_at`
+
+### Invoice Lines
+
+`id`, `invoice_id` (FK), `designation`, `quantity`, `unit`, `unit_price`, `total_ht`
+
+### Other Documents
+
+`id`, `provider`, `raw_text`, `created_at`, `updated_at`
+
+## Configuration
+
+Environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATA_DIR` | OS-specific | Base directory for database and uploads |
+| `PORT` | `8000` | Backend server port |
+| `HOST` | `127.0.0.1` | Backend bind address |
+| `DEBUG` | `false` | Enable debug logging |
+| `ANTHROPIC_API_KEY` | (none) | Claude API key for fallback processing |
 
 ## Troubleshooting
 
-### Tesseract Language Data
-If you encounter "Error loading language data" errors, ensure French and English language packs are installed:
+### Florence-2 model download
 
-```bash
-# In Docker container
-apt-get update
-apt-get install tesseract-ocr-fra tesseract-ocr-eng
-```
+The Florence-2 model (~1.5 GB) downloads automatically on first run. Ensure you have internet connectivity and sufficient disk space.
 
-### Memory Issues
-Florence-2 requires significant RAM. If you encounter OOM errors:
-- Increase Docker memory limit
-- Use CPU instead of GPU
-- Process one page at a time
+### Low OCR confidence
 
-### Low OCR Confidence
-If OCR confidence is low:
-- Check PDF quality
+- Check the source document quality
+- Verify correct language settings (`fra+eng`)
 - Adjust preprocessing parameters
-- Verify correct language settings
+
+### Memory
+
+Florence-2 requires at least 4 GB RAM. If you encounter out-of-memory errors, ensure sufficient RAM is available.
 
 ## License
 
 MIT
 
-## TODOS
-- test anthropic handwritting model for handwritten invoices
-- contact https://www.transkribus.org/ for handwritten invoice processing options
+## TODOs
+
+- Test Anthropic handwriting model for handwritten invoices
+- Contact https://www.transkribus.org/ for handwritten invoice processing options

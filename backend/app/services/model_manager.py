@@ -20,6 +20,16 @@ def get_florence_service() -> FlorenceService:
     return _florence_service
 
 
+def get_model_status() -> dict:
+    """Return the loading status of all models."""
+    global _florence_service
+    loaded = _florence_service is not None and _florence_service.model is not None
+    return {
+        "loaded": loaded,
+        "florence": "loaded" if loaded else "not_loaded",
+    }
+
+
 def initialize_models():
     """Initialize all models at startup"""
     logger.info("Initializing models at startup...")

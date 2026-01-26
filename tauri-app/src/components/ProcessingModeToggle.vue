@@ -32,7 +32,7 @@ onMounted(() => {
 });
 
 // Watch for API key status changes
-watch(() => props.apiKeyStatus, (newStatus, oldStatus) => {
+watch(() => props.apiKeyStatus, (newStatus) => {
   if (currentMode.value === 'cloud' && (!newStatus?.configured || !newStatus?.valid)) {
     logger.warn(MODULE, 'API key invalidated while in cloud mode', {
       configured: newStatus?.configured,
@@ -66,18 +66,6 @@ function toggleMode() {
   emit('mode-changed', currentMode.value);
 }
 
-function setMode(mode: 'local' | 'cloud') {
-  if (mode === 'cloud' && !isCloudEnabled.value) {
-    logger.action(MODULE, 'Set mode blocked - API key not configured', { requestedMode: mode });
-    emit('configure-api-key');
-    return;
-  }
-  const previousMode = currentMode.value;
-  currentMode.value = mode;
-  logger.action(MODULE, 'Mode set explicitly', { from: previousMode, to: mode });
-  localStorage.setItem(PREFERENCE_KEY, currentMode.value);
-  emit('mode-changed', currentMode.value);
-}
 </script>
 
 <template>

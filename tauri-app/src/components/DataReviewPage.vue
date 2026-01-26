@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue';
-import { updateInvoice, getJobImageUrl, cleanupJob, type FileProcessingResult, type InvoiceUpdate, type InvoiceLineUpdate } from '../api';
+import { updateInvoice, getJobImageUrl, cleanupJob, type FileProcessingResult, type InvoiceUpdate } from '../api';
 
 interface LineItem {
   description: string;

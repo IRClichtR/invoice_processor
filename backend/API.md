@@ -1,4 +1,4 @@
-# ParseFacture API Documentation
+# Invoicator API Documentation
 
 Two-step document processing workflow for invoice extraction.
 
@@ -321,7 +321,7 @@ curl "http://localhost:8000/api/v1/cleanup/stats"
   "exists": true,
   "file_count": 24,
   "total_size_mb": 156.7,
-  "path": "/tmp/parsefacture"
+  "path": "{DATA_DIR}/temp"
 }
 ```
 

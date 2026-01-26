@@ -180,16 +180,6 @@ function formatDateTime(dateStr: string): string {
   });
 }
 
-function getStatusLabel(status: string): string {
-  switch (status) {
-    case 'imported': return 'Imported';
-    case 'paid': return 'Paid';
-    case 'pending': return 'Pending';
-    case 'overdue': return 'Overdue';
-    default: return status;
-  }
-}
-
 async function handleDeleteInvoice(id: number) {
   if (!confirm('Are you sure you want to delete this invoice?')) {
     return;

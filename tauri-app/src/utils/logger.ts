@@ -3,8 +3,6 @@
  * Provides consistent, structured logging for debugging and monitoring
  */
 
-type LogLevel = 'debug' | 'info' | 'warn' | 'error';
-
 interface LogContext {
   [key: string]: unknown;
 }

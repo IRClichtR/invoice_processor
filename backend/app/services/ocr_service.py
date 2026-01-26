@@ -2,6 +2,7 @@
 OCR Service - Extract text with spatial positions using Tesseract
 """
 
+import os
 import pytesseract
 from PIL import Image
 from typing import Dict, List, Any
@@ -9,6 +10,16 @@ import structlog
 import time
 
 from app.core.config import settings
+from app.core.bundled_deps import get_tesseract_cmd, get_tessdata_prefix
+
+# Configure bundled tesseract if running from PyInstaller build
+_bundled_tesseract = get_tesseract_cmd()
+if _bundled_tesseract:
+    pytesseract.pytesseract.tesseract_cmd = _bundled_tesseract
+
+_bundled_tessdata = get_tessdata_prefix()
+if _bundled_tessdata:
+    os.environ['TESSDATA_PREFIX'] = _bundled_tessdata
 
 logger = structlog.get_logger(__name__)
 

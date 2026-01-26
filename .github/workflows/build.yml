@@ -1,0 +1,133 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: 'Create a draft GitHub release'
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: '3.11'
+  NODE_VERSION: 'lts/*'
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            platform: linux
+            rust_target: ''
+          - os: macos-latest
+            platform: macos
+            rust_target: aarch64-apple-darwin
+          - os: windows-latest
+            platform: windows
+            rust_target: ''
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # --- System dependencies ---
+      - name: Install GNU Make (Windows)
+        if: matrix.platform == 'windows'
+        run: choco install make -y
+
+      - name: Install system build dependencies
+        run: make setup CONFIRM=1
+
+      # --- Python ---
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      # --- Node.js ---
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: tauri-app/package-lock.json
+
+      # --- Rust ---
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: tauri-app/src-tauri -> target
+
+      # --- Build backend & frontend deps via Makefile ---
+      - name: Build backend and install frontend deps
+        run: make resources frontend-deps
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: tauri-app
+          args: ${{ matrix.rust_target && format('--target {0}', matrix.rust_target) || '' }}
+
+      # --- Upload artifacts ---
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: invoicator-${{ matrix.platform }}
+          path: |
+            tauri-app/src-tauri/target/**/release/bundle/**/*.deb
+            tauri-app/src-tauri/target/**/release/bundle/**/*.AppImage
+            tauri-app/src-tauri/target/**/release/bundle/**/*.dmg
+            tauri-app/src-tauri/target/**/release/bundle/**/*.app
+            tauri-app/src-tauri/target/**/release/bundle/**/*.msi
+            tauri-app/src-tauri/target/**/release/bundle/**/*.exe
+          if-no-files-found: warn
+
+  release:
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.create_release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f | head -50
+
+      - name: Create draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          tag_name: v${{ github.run_number }}
+          name: Invoicator v${{ github.run_number }}
+          files: artifacts/**/*

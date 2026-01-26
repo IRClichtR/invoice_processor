@@ -229,7 +229,6 @@ async function startProcessing() {
 
     if (!isCancelled.value) {
       // Determine final status
-      const hasErrors = processingFiles.value.some(f => f.status === 'error');
       const allErrors = processingFiles.value.every(f => f.status === 'error');
 
       const summary = {
