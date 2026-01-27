@@ -1,3 +1,18 @@
+<!--
+  Copyright 2026 Floriane TUERNAL SABOTINOV
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+-->
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue';
 import {
@@ -261,6 +276,9 @@ watch(() => props.invoiceId, () => {
             </svg>
             Back to List
           </button>
+          <a href="https://ko-fi.com/W7W41T13JM" target="_blank" class="donate-btn">
+            <img alt="Support me on Ko-fi" src="https://storage.ko-fi.com/cdn/kofi2.png?v=3" height="36" />
+          </a>
         </div>
       </div>
     </header>

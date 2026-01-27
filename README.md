@@ -1,6 +1,8 @@
 # Invoicator
 
-A desktop application for processing invoices locally using OCR and vision-language models. Built with Tauri, Vue.js, and a Python/FastAPI backend.
+[![Support me on Ko-fi](https://storage.ko-fi.com/cdn/kofi2.png?v=3)](https://ko-fi.com/W7W41T13JM)
+
+A desktop application for processing invoices locally using OCR and vision-language models. Built with Tauri, Vue.js, and a Python/FastAPI backend. Optional Claude API fallback for documents that cannot be processed locally.
 
 ## Features
 
@@ -9,6 +11,8 @@ A desktop application for processing invoices locally using OCR and vision-langu
 - **OCR extraction**: Tesseract OCR optimized for French and English text
 - **VLM extraction**: Florence-2 Vision-Language Model for structured data extraction
 - **Claude API fallback**: Optional external processing via Anthropic Claude for documents that cannot be processed locally
+- **Database storage**: SQLite database for storing invoices and extracted line items
+- **CSV export**: Export invoices and line items to CSV files
 - **Invoice validation**: Automatic detection of invoice documents and VAT validation
 - **Cross-platform**: Builds for Linux, macOS (ARM), and Windows
 
@@ -194,9 +198,4 @@ Florence-2 requires at least 4 GB RAM. If you encounter out-of-memory errors, en
 
 ## License
 
-MIT
-
-## TODOs
-
-- Test Anthropic handwriting model for handwritten invoices
-- Contact https://www.transkribus.org/ for handwritten invoice processing options
+Apache License 2.0 -- see [LICENSE.md](LICENSE.md) for details.

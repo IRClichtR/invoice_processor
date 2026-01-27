@@ -32,11 +32,11 @@ Prioritize code simplicity and readability. Ensure that the code is well-documen
 - [x] Workflow for Claude API processing for documents that cannot be processed locally.
 - [x] Develop frontend interface using Vue.js for user interaction.
 - [x] Implement data validation checks for extracted invoice details.
-- [ ] Finish claude workflow
-- [ ] Finish Python API with get/post endpoints.
-- [ ] Move fastAPI backend to sidecar in Tauri application.
-- [ ] Tauri calls of API endpoints.
-- [ ] Endpoints testing
-- [ ] Frontend integration testing
+- [x] Finish claude workflow
+- [x] Finish Python API with get/post endpoints.
+- [x] Move fastAPI backend to sidecar in Tauri application.
+- [x] Tauri calls of API endpoints.
+- [x] Endpoints testing
+- [x] Frontend integration testing
 - [ ] E2e
-- [ ] GithHub Actions
+- [x] GithHub Actions
