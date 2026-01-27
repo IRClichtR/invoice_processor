@@ -147,7 +147,7 @@ tauri: .build/resources.stamp .build/frontend-deps.stamp
 	$(call TOUCH,$@)
 
 .build/python-deps.stamp: backend/requirements.txt .build/venv.stamp | .build
-	$(PIP) install -r backend/requirements.txt pyinstaller
+	$(PIP) install --extra-index-url https://download.pytorch.org/whl/cpu -r backend/requirements.txt pyinstaller
 	$(call TOUCH,$@)
 
 .build/vendor-deps.stamp: | .build
