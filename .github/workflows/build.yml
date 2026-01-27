@@ -51,6 +51,11 @@ jobs:
       - name: Install system build dependencies
         run: make setup CONFIRM=1
 
+      - name: Add Tesseract to PATH (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: echo "C:\Program Files\Tesseract-OCR" >> $env:GITHUB_PATH
+
       # --- Python ---
       - name: Set up Python
         uses: actions/setup-python@v5
