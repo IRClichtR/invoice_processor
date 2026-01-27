@@ -74,6 +74,14 @@ else
     CHECK_TESSERACT = command -v tesseract >/dev/null 2>&1
 endif
 
+# PyTorch install command (CPU-only; +cpu wheels only exist for Linux)
+ifeq ($(PLATFORM),linux)
+    INSTALL_TORCH = $(PIP) install torch==2.5.1+cpu torchvision==0.20.1+cpu \
+                    --extra-index-url https://download.pytorch.org/whl/cpu
+else
+    INSTALL_TORCH = $(PIP) install torch==2.5.1 torchvision==0.20.1
+endif
+
 # Packages installed by `make setup`
 LINUX_DEPS := tesseract-ocr tesseract-ocr-eng tesseract-ocr-fra poppler-utils \
               libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf \
@@ -147,6 +155,8 @@ tauri: .build/resources.stamp .build/frontend-deps.stamp
 	$(call TOUCH,$@)
 
 .build/python-deps.stamp: backend/requirements.txt .build/venv.stamp | .build
+	$(PYTHON) -m pip install --upgrade pip
+	$(INSTALL_TORCH)
 	$(PIP) install -r backend/requirements.txt pyinstaller
 	$(call TOUCH,$@)
 

@@ -15,8 +15,5 @@ accelerate
 einops
 timm
 structlog
---extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.5.1+cpu
-torchvision==0.20.1+cpu
 anthropic==0.76.0
 cryptography==46.0.3
