@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       create_release:
@@ -111,7 +113,7 @@ jobs:
 
   release:
     needs: build
-    if: github.event_name == 'workflow_dispatch' && inputs.create_release
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.create_release)
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -128,11 +130,11 @@ jobs:
       - name: List artifacts
         run: find artifacts -type f | head -50
 
-      - name: Create draft release
+      - name: Upload binaries to release
         uses: softprops/action-gh-release@v2
         with:
-          draft: true
-          generate_release_notes: true
-          tag_name: v${{ github.run_number }}
-          name: Invoicator v${{ github.run_number }}
+          draft: ${{ github.event_name == 'workflow_dispatch' }}
+          generate_release_notes: ${{ github.event_name == 'workflow_dispatch' }}
+          tag_name: ${{ github.event_name == 'release' && github.event.release.tag_name || format('v{0}', github.run_number) }}
+          name: ${{ github.event_name == 'release' && github.event.release.name || format('Invoicator v{0}', github.run_number) }}
           files: artifacts/**/*
