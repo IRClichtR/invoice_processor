@@ -59,11 +59,16 @@ hidden_imports = (
     + collect_submodules("uvicorn.protocols")
     # SQLAlchemy dialect
     + ["sqlalchemy.dialects.sqlite"]
-    # ML / AI
+    # ML / AI - Core
     + collect_submodules("torch")
     + collect_submodules("transformers")
     + collect_submodules("timm")
     + ["einops", "einops.layers", "einops.layers.torch"]
+    # ML / AI - HuggingFace ecosystem (required for Florence-2 model download)
+    + collect_submodules("huggingface_hub")
+    + collect_submodules("accelerate")
+    + collect_submodules("safetensors")
+    + ["filelock", "requests", "tqdm", "fsspec", "aiohttp"]
     # Image processing
     + collect_submodules("PIL")
     # Logging
@@ -77,7 +82,11 @@ hidden_imports = (
 )
 
 # Collect data files needed at runtime (e.g. tokenizer configs)
-datas = collect_data_files("transformers", include_py_files=False)
+datas = (
+    collect_data_files("transformers", include_py_files=False)
+    + collect_data_files("huggingface_hub", include_py_files=False)
+    + collect_data_files("safetensors", include_py_files=False)
+)
 
 # Packages to exclude (not needed, saves space)
 excludes = [
