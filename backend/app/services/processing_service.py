@@ -38,7 +38,7 @@ from app.services.analysis_service import AnalysisService
 from app.services.cleanup_service import CleanupService
 from app.services.api_key_service import ApiKeyService
 from app.services.document_storage_service import document_storage_service
-from app.services.model_manager import get_florence_service
+from app.services.model_manager import get_florence_service, is_florence_available
 from app.services.claude_vision_service import (
     ClaudeVisionService,
     ClaudeVisionError,
@@ -249,6 +249,14 @@ class ProcessingService:
             Extraction result dict
         """
         logger.info("Processing with Florence-2", job_id=job.id)
+
+        # Check if Florence model is available
+        if not is_florence_available():
+            logger.error("Florence model not available")
+            return {
+                'error': "Florence model failed to load. Please use Claude pipeline or try restarting the application.",
+                'structured_data': None
+            }
 
         try:
             # Use stored OCR data from analysis

@@ -34,6 +34,12 @@ def get_florence_service() -> FlorenceService:
     return _florence_service
 
 
+def is_florence_available() -> bool:
+    """Check if Florence service is loaded and ready"""
+    global _florence_service
+    return _florence_service is not None and _florence_service.model is not None
+
+
 def get_model_status() -> dict:
     """Return the loading status of all models."""
     global _florence_service
@@ -47,5 +53,14 @@ def get_model_status() -> dict:
 def initialize_models():
     """Initialize all models at startup"""
     logger.info("Initializing models at startup...")
-    get_florence_service()
-    logger.info("Models initialized successfully!")
+    try:
+        get_florence_service()
+        logger.info("Models initialized successfully!")
+    except Exception as e:
+        logger.error(
+            "Failed to initialize models - Florence pipeline will be unavailable",
+            error=str(e),
+            error_type=type(e).__name__
+        )
+        # Don't re-raise - allow app to start without models
+        # Users can still use Claude pipeline or export existing data
