@@ -97,6 +97,21 @@ jobs:
           projectPath: tauri-app
           args: ${{ matrix.rust_target && format('--target {0}', matrix.rust_target) || '' }}
 
+      # --- macOS: Ad-hoc sign with entitlements ---
+      - name: Sign macOS app with entitlements
+        if: matrix.platform == 'macos'
+        run: |
+          APP_PATH=$(find tauri-app/src-tauri/target -name "Invoicator.app" -type d | head -1)
+          if [ -n "$APP_PATH" ]; then
+            echo "Signing $APP_PATH with entitlements..."
+            # Sign all binaries in the backend resources
+            find "$APP_PATH/Contents/Resources/backend" -type f -perm +111 -exec \
+              codesign --force --deep --sign - --entitlements tauri-app/src-tauri/entitlements.plist {} \; 2>/dev/null || true
+            # Sign the main app bundle
+            codesign --force --deep --sign - --entitlements tauri-app/src-tauri/entitlements.plist "$APP_PATH"
+            echo "Signing complete"
+          fi
+
       # --- Upload artifacts ---
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
