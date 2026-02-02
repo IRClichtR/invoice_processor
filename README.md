@@ -48,10 +48,20 @@ Download the latest installer from the
 [Releases](https://github.com/IRClichtR/invoice_processor/releases) page:
 
 - **Linux**: `.deb` package (install with `sudo apt install ./Invoicator_*.deb`)
-- **macOS**: `.dmg` disk image
+- **macOS**: `.dmg` disk image (see note below)
 - **Windows**: `.msi` installer
 
 On Linux, system dependencies (Tesseract OCR, Poppler) are installed automatically via apt.
+
+### macOS: First Launch
+
+macOS may show "Invoicator is damaged" or "cannot be opened" because the app is not notarized. To fix this, run in Terminal after installing:
+
+```bash
+xattr -cr /Applications/Invoicator.app
+```
+
+Alternatively, right-click the app and select "Open" to bypass Gatekeeper.
 
 > The Florence-2 ML model (~1.8 GB) downloads automatically on first use.
 
