@@ -23,8 +23,8 @@ Invoicator (Tauri shell)
 ├── Frontend: Vue.js + TypeScript + Tailwind CSS
 ├── Rust layer: Backend lifecycle management, health checks
 └── Backend: Python/FastAPI (bundled via PyInstaller)
-    ├── Tesseract OCR (bundled)
-    ├── Poppler (bundled)
+    ├── Tesseract OCR (system dependency)
+    ├── Poppler (system dependency)
     ├── Florence-2 (auto-downloaded on first run)
     └── SQLite database
 ```
@@ -47,11 +47,11 @@ In production, Tauri spawns the Python backend as a child process and monitors i
 Download the latest installer from the
 [Releases](https://github.com/IRClichtR/invoice_processor/releases) page:
 
-- **Windows**: `.msi` installer
+- **Linux**: `.deb` package (install with `sudo apt install ./Invoicator_*.deb`)
 - **macOS**: `.dmg` disk image
-- **Linux**: `.deb` package or `.AppImage`
+- **Windows**: `.msi` installer
 
-All dependencies are bundled. No developer tools required.
+On Linux, system dependencies (Tesseract OCR, Poppler) are installed automatically via apt.
 
 > The Florence-2 ML model (~1.8 GB) downloads automatically on first use.
 
@@ -112,7 +112,6 @@ Or run individual stages:
 
 ```bash
 make setup             # Install system build dependencies
-make vendor-deps       # Fetch platform vendor binaries
 make backend           # Build backend with PyInstaller
 make resources         # Copy backend into Tauri resources
 make frontend-deps     # Install npm dependencies

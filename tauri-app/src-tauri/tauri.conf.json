@@ -33,6 +33,16 @@
     ],
     "resources": {
       "resources/backend": "backend"
+    },
+    "linux": {
+      "deb": {
+        "depends": [
+          "tesseract-ocr",
+          "tesseract-ocr-eng",
+          "tesseract-ocr-fra",
+          "poppler-utils"
+        ]
+      }
     }
   }
 }

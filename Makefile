@@ -170,7 +170,7 @@ tauri: .build/resources.stamp .build/frontend-deps.stamp
 	$(FETCH_VENDOR)
 	$(call TOUCH,$@)
 
-.build/backend.stamp: .build/python-deps.stamp .build/vendor-deps.stamp | .build
+.build/backend.stamp: .build/python-deps.stamp | .build
 	cd backend && $(PYINSTALLER) invoice_processor.spec --noconfirm
 	$(call TOUCH,$@)
 
